@@ -340,7 +340,7 @@ class DQNAgentConfig:
     batch_size: int = 32 # 32 # 128
     # n_training_steps: int = 50_000
     n_training_steps: int = 4_000_000
-    evaluation_n_training_steps: int = 100 _000
+    evaluation_n_training_steps: int = 100_000
     log_performance_n_training_steps: int = 1 # This is not part of Carvalho2023
     n_step_q_learning: int = 5 # Default in Carvalho2023
     episode_length: int = 60 # According to Barreto2018, Barreto2017 this is 1 minute, 60 steps.
@@ -998,7 +998,7 @@ class MSFA_SF_NStep:
 ############ MAIN
 ################################################################################################################################################
 
-if __name__ = '__main__':
+if __name__ == '__main__':
     import gymnasium as gym
     from minigrid.wrappers import RGBImgObsWrapper
     from envs.babyai.gotoavoid import PickupAndAvoid
