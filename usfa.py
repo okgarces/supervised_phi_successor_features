@@ -48,6 +48,28 @@ class Logger:
         
         return pd.DataFrame(np.loadtxt(filename, delimiter=','))
 
+# Task Embedders
+# one hot embedder for actions, last column is the reward 
+class OAREmbedder:
+    def __init__(self, num_actions):
+        self.num_actions = num_actions
+    
+    # BabyAI embedding according to the observation is not provided
+    def __call__(self, action, observation, reward, observations = None):
+        if not isinstance(action, torch.Tensor):
+            action = torch.tensor(action, device=device)
+        
+        # Inputs are in the form action, observation, reward
+        actions = torch.nn.functional.one_hot(action, num_classes=self.num_actions)
+        
+        if not isinstance(reward, torch.Tensor):
+            reward = torch.tensor(reward, device=device)
+        
+        reward = reward.unsqueeze(-1)
+        
+        reward = torch.tanh(reward)
+        return torch.cat((actions, reward), axis=-1)
+
 ################################################################################################################################################
 ############## Replay Buffer
 ################################################################################################################################################
