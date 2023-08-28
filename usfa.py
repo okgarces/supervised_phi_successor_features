@@ -23,6 +23,30 @@ to_tensor = lambda x: torch.tensor(x, device=device, dtype=torch.float32) if not
 
 device = 'cuda:0'
 
+class Logger:
+    SOURCE_TASK = 'source'
+    TARGET_TASK = 'target'
+    
+    HEADERS = ['task_id', 'reward', 'step', 'accum_loss', 'q_loss', 'psi_loss', 'phi_loss']
+    
+    def __init__(self, root_path):
+        self.source_tasks_file = root_path + f'results/source_performance_{strftime("%d_%b_%Y_%H_%M_%S", gmtime())}.csv'
+        self.target_tasks_file = root_path + f'results/target_performance_{strftime("%d_%b_%Y_%H_%M_%S", gmtime())}.csv'
+        
+    def log_agent_performance(self, task, reward, step, accum_loss, *args, **kwargs):
+        values = np.array([task, reward, step, accum_loss, *args])
+        type_task = kwargs.get('type_task', self.SOURCE_TASK)
+        filename = self.source_tasks_file if type_task == self.SOURCE_TASK else self.target_tasks_file
+        
+        print(filename)
+        
+        with open(filename, 'a') as f:
+            np.savetxt(f, np.column_stack(values), delimiter=',', newline='\n')
+    
+    def load_text(self, type_task='source'):
+        filename = self.source_tasks_file if type_task == self.SOURCE_TASK else self.target_tasks_file
+        
+        return pd.DataFrame(np.loadtxt(filename, delimiter=','))
 
 ################################################################################################################################################
 ############## Replay Buffer
