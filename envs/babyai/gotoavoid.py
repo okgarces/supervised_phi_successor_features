@@ -1,8 +1,23 @@
 from minigrid.envs.babyai.core.levelgen import LevelGen
 from minigrid.envs.babyai.core.roomgrid_level import RejectSampling, RoomGridLevel
 from minigrid.envs.babyai.core.verifier import ObjDesc, PickupInstr
+from minigrid.core.world_object import Ball, Box, Door, Key, WorldObj
+
 import numpy as np
 import random
+
+from minigrid.minigrid_env import MiniGridEnv
+
+def reject_next_to(env: MiniGridEnv, pos: tuple[int, int]):
+    """
+    Function to filter out object positions that are right next to
+    the agent's starting point
+    """
+
+    sx, sy = env.agent_pos
+    x, y = pos
+    d = abs(sx - x) + abs(sy - y)
+    return d < 2
 
 class PickupAndAvoid(RoomGridLevel):
     """
@@ -50,7 +65,33 @@ class PickupAndAvoid(RoomGridLevel):
         self.vector_to_reward = vector_to_reward # [1,0,0,0] means pickup red key. [0,1,0,0] means pickup blue key.
         self.action_space.n = 4 # Only actions 0 to 3
         
+    def place_in_room(self, i: int, j: int, obj: WorldObj) -> tuple[WorldObj, tuple[int, int]]:
+        """
+        Add an existing object to room (i, j). This method is called by add_object in room grid level.
+        """
+        room = self.get_room(i, j)
+        top = (room.top[0] + 1, room.top[1] + 1)
+        size = (room.size[0] - 1, room.size[1] - 1)
+        pos = self.place_obj(obj, top, size, reject_fn=reject_next_to, max_tries=1_000_000)
+        room.objs.append(obj)
+
+        return obj, pos
+
+    def _make_valid_object(self, obj: tuple):
+        obj_type, obj_color = obj
         
+        if obj_type == "key":
+            obj = Key(obj_color)
+        elif obj_type == "ball":
+            obj = Ball(obj_color)
+        elif obj_type == "box":
+            obj = Box(obj_color)
+        else:
+            raise ValueError(
+                f"{kind} object kind is not available in this environment."
+            )
+        return obj
+    
     def _add_valid_objects(self):     
         objs = []
         
@@ -59,7 +100,9 @@ class PickupAndAvoid(RoomGridLevel):
             room_j = self._rand_int(0, self.num_rows)
             
             obj = self.valid_elements[n % len(self.valid_elements)]
-            obj, _ = self.add_object(room_i, room_j, *obj)
+            obj = self._make_valid_object(obj)
+            # obj, _ = self.add_object(room_i, room_j, *obj)
+            self.place_in_room(room_i, room_j, obj)
             objs.append(obj)
             
         return objs
@@ -72,7 +115,7 @@ class PickupAndAvoid(RoomGridLevel):
         self.connect_all()
         
         self.list_of_valid_objects = self._add_valid_objects()
-        self.check_objs_reachable()
+        # self.check_objs_reachable() # do we need to check reachability for all objects?
         
         # Generate mission instruction from vector to reward
         self.instrs = PickupInstr(ObjDesc(self.object_kind))
@@ -86,7 +129,7 @@ class PickupAndAvoid(RoomGridLevel):
         # Only for fixed feature
         feature = np.zeros(len(self.object_colors_vector))
         
-        if (action == 4 and (self.carrying is not None)) or terminated:
+        if (self.carrying is not None) or terminated:
             # calculate the reward
             idx_object_in_valid_obj = self.object_colors_vector.index(self.carrying.color)
             
@@ -102,6 +145,7 @@ class PickupAndAvoid(RoomGridLevel):
             # else:
             #     reward = np.abs(env_reward) * reward_to_compute
                 
+            terminated = 1
             self.add_object(0, 0, self.carrying.type, self.carrying.color)
             self.carrying = None
         

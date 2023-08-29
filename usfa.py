@@ -2,52 +2,18 @@ import numpy as np
 from time import gmtime, strftime
 import pandas as pd
 import dataclasses
-import torch.functional as F
-import random
+
 
 import torch
-from torch.utils.data.sampler import WeightedRandomSampler
-from collections import deque
-import os
-from time import time, sleep
-import gc
-import fasteners
-import pickle
-
-################################################################################################################################################
-############## UTILS
-################################################################################################################################################
-
-to_tensor = lambda x: torch.tensor(x, device=device, dtype=torch.float32) if not isinstance(x, torch.Tensor) else x
+import numpy as np
+import random
+import torch.functional as F
 
 
 device = 'cuda:0'
 
-class Logger:
-    SOURCE_TASK = 'source'
-    TARGET_TASK = 'target'
-    
-    HEADERS = ['task_id', 'reward', 'step', 'accum_loss', 'q_loss', 'psi_loss', 'phi_loss']
-    
-    def __init__(self, root_path):
-        self.source_tasks_file = root_path + f'results/source_performance_{strftime("%d_%b_%Y_%H_%M_%S", gmtime())}.csv'
-        self.target_tasks_file = root_path + f'results/target_performance_{strftime("%d_%b_%Y_%H_%M_%S", gmtime())}.csv'
-        
-    def log_agent_performance(self, task, reward, step, accum_loss, *args, **kwargs):
-        values = np.array([task, reward, step, accum_loss, *args])
-        type_task = kwargs.get('type_task', self.SOURCE_TASK)
-        filename = self.source_tasks_file if type_task == self.SOURCE_TASK else self.target_tasks_file
-        
-        print(filename)
-        
-        with open(filename, 'a') as f:
-            np.savetxt(f, np.column_stack(values), delimiter=',', newline='\n')
-    
-    def load_text(self, type_task='source'):
-        filename = self.source_tasks_file if type_task == self.SOURCE_TASK else self.target_tasks_file
-        
-        return pd.DataFrame(np.loadtxt(filename, delimiter=','))
 
+to_tensor = lambda x: torch.tensor(x, device=device, dtype=torch.float32) if not isinstance(x, torch.Tensor) else x.to(device)
 # Task Embedders
 # one hot embedder for actions, last column is the reward 
 class OAREmbedder:
@@ -70,9 +36,16 @@ class OAREmbedder:
         reward = torch.tanh(reward)
         return torch.cat((actions, reward), axis=-1)
 
-################################################################################################################################################
-############## Replay Buffer
-################################################################################################################################################
+
+import numpy as np
+import torch
+from torch.utils.data.sampler import WeightedRandomSampler
+from collections import deque
+import os
+from time import time, sleep
+import gc
+import fasteners
+import pickle
 
 
 class NStepMemory(dict):
@@ -125,7 +98,8 @@ class NStepMemory(dict):
 
 
 class ReplayMemory:
-    def __init__(self, memory_size=100_000, batch_size=32, n_step=3, state_size=(3,80,80), cell_size=256, action_repeat=4, n_stacks=4, alpha=0.4):        
+    def __init__(self, memory_size=100_000, batch_size=32, n_step=3, state_size=(3,80,80), cell_size=256, action_repeat=1, n_stacks=1, alpha=0.4):
+        # Pong and Atari needs action_repeat and n_stacks = 4
         self.index = 0
         self.memory_size = memory_size
         self.cell_size = cell_size
@@ -258,6 +232,11 @@ class ReplayMemory:
         for idx in index:
             indices = np.arange(idx, idx+self.sequence_length) % self.memory_size
             priority = self.memory['priority'][idx: idx+self.sequence_length]
+
+            if len(priority) < 1:
+                print(priority, indices, idx, 'Wrong priority')
+                continue
+            
             self.memory['sequence_priority'][idx] = self.eta * priority.max() + (1 - self.eta) * priority.mean()
 
             if update_pre_next_seq_priority:
@@ -296,11 +275,12 @@ class ReplayMemory:
 
     def sample(self, device='cpu'):
         
+        seq_start_index = self.arange[self.memory['is_seq_start']==1]
+        
         # Return void when not enough data to complete batch size
-        if len(self.memory) < self.batch_size:
+        if self.size < self.batch_size or len(seq_start_index) < 1:
             return None, None, None # Return tuple
         
-        seq_start_index = self.arange[self.memory['is_seq_start']==1]
         priority = self.memory['sequence_priority'][seq_start_index]
         
         seq_index = WeightedRandomSampler(
@@ -357,10 +337,31 @@ class ReplayMemory:
         batch['next_state'] = batch['next_state'].astype(np.float32) / 255.
         return batch, index
 
+class Logger:
+    SOURCE_TASK = 'source'
+    TARGET_TASK = 'target'
     
-################################################################################################################################################
-#### CONFIG and SETTINGS
-################################################################################################################################################
+    HEADERS = ['task_id', 'reward', 'step', 'accum_loss', 'q_loss', 'psi_loss', 'phi_loss']
+    
+    def __init__(self, root_path):
+        self.source_tasks_file = root_path + f'results/source_performance_{strftime("%d_%b_%Y_%H_%M_%S", gmtime())}.csv'
+        self.target_tasks_file = root_path + f'results/target_performance_{strftime("%d_%b_%Y_%H_%M_%S", gmtime())}.csv'
+        
+    def log_agent_performance(self, task, reward, step, accum_loss, *args, **kwargs):
+        values = np.array([task, reward, step, accum_loss, *args])
+        type_task = kwargs.get('type_task', self.SOURCE_TASK)
+        filename = self.source_tasks_file if type_task == self.SOURCE_TASK else self.target_tasks_file
+        
+        print(filename)
+        
+        with open(filename, 'a') as f:
+            np.savetxt(f, np.column_stack(values), delimiter=',', newline='\n')
+    
+    def load_text(self, type_task='source'):
+        filename = self.source_tasks_file if type_task == self.SOURCE_TASK else self.target_tasks_file
+        
+        return pd.DataFrame(np.loadtxt(filename, delimiter=','))
+
 
 @dataclasses.dataclass
 class CommonConfig:
@@ -381,15 +382,15 @@ class SuccessorFeatureConfig:
 
 @dataclasses.dataclass
 class DQNAgentConfig:
-    epsilon: int = 0.1 # Default according to Borsa2020 is 0.1.
+    epsilon: int = 0.9 # 0.99 # Borsa2020 keeps 0.1 fixed
     gym_legacy: bool = True
     batch_size: int = 32 # 32 # 128
     # n_training_steps: int = 50_000
     n_training_steps: int = 4_000_000
-    evaluation_n_training_steps: int = 100_000
-    log_performance_n_training_steps: int = 1 # This is not part of Carvalho2023
+    evaluation_n_training_steps: int = 10_000
+    log_performance_n_training_steps: int = 2_500 # This is not part of Carvalho2023
     n_step_q_learning: int = 5 # Default in Carvalho2023
-    episode_length: int = 60 # According to Barreto2018, Barreto2017 this is 1 minute, 60 steps.
+    episode_length: int = 60 # According to Barreto2018, Barreto2017 this is 1 minute. 
     
     # Replay buffer
     n_replay_samples: int = 100_000
@@ -435,12 +436,6 @@ class FARMMemoryConfig(CommonConfig):
 @dataclasses.dataclass
 class FARMConfig:
     initial_config: int = 100
-
-
-        
-################################################################################################################################################
-#### MODELS
-################################################################################################################################################
 
 # DQN ConvNet
 # Vision Torso for Go To Environment
@@ -490,7 +485,8 @@ class DQNConvolutionalNetwork(torch.nn.Module):
             flat = torch.reshape(outputs, [-1])  # [D]
 
         return self.out_net(flat)
-    
+
+# DQN_USF_MODEL
 
 class DQN_USFA_Model(torch.nn.Module):
     
@@ -553,7 +549,8 @@ class DQN_USFA_Model(torch.nn.Module):
     def forward(self, obs, reward_mapper, action_taken, mode='rollout'):
         # Prepare inputs
         inputs = to_tensor(obs) # [n_trace, n_batch, ...] if coming from replay buffer else [n_batch, n_channel,...]
-        action_taken = to_tensor(action_taken)      
+        action_taken = to_tensor(action_taken)
+        reward_mapper = to_tensor(reward_mapper)
         
         if inputs.ndim == 4:
             inputs = inputs.unsqueeze(0) # [n_trace, n_batch, n_channel, ...]
@@ -596,7 +593,10 @@ class DQN_USFA_Model(torch.nn.Module):
         # Recurrent Torso
         recurrent_input = torch.concat([vision_output, action_taken], dim=-1)
         recurrent_output, (hidden_state, cell_state) = self._recurrent_net(recurrent_input, (initial_hidden_state, initial_cell_state))
+        
+        if n_batch>32: print(recurrent_output.shape, 'before')
         recurrent_output = self._f_recurrent(recurrent_output) # [n_trace, n_batch, hidden_lstm_size]
+        if n_batch>32: print(recurrent_output.shape, 'after')
         
         # recurrent_output = recurrent_output.unsqueeze(1).repeat(1, self.sf_config.d_z_samples, 1)
         recurrent_output = recurrent_output.view(n_batch, n_trace, -1)
@@ -624,8 +624,6 @@ class DQN_USFA_Model(torch.nn.Module):
                 
         return sf_values, q_values, hidden_state, cell_state
 
-
-
 class MSFA_SF_NStep:
     """
     Modular Successor Feature Approximator Agent
@@ -640,7 +638,7 @@ class MSFA_SF_NStep:
         
         # self.n_acton
         self.epsilon = config.epsilon
-        self.min_epsilon = 0.05
+        self.min_epsilon = 0.1
         
         self.gym_legacy = config.gym_legacy
         self.n_batch = config.batch_size
@@ -674,7 +672,7 @@ class MSFA_SF_NStep:
         self.policy_network = DQN_USFA_Model().to(device)
         
         self.optimizer = torch.optim.Adam(self.policy_network.parameters(), lr=config.learning_rate)
-        self.gamma = to_tensor(config.gamma) # Convert to tensor since beginning
+        self.gamma = config.gamma
         
         self.use_target_soft_update = config.use_target_soft_update
         self.target_update_tau = config.target_update_tau
@@ -717,7 +715,8 @@ class MSFA_SF_NStep:
             next_action = next_q_value.argmax(-1)
             target_next_q_value = target_next_q_value[next_action]
             target_q_value = reward + (self.gamma ** self.n_step_q_learning) * target_next_q_value
-        
+
+        # to cpu after computation
         priority = np.abs(q_value - target_q_value) + self.priority_epsilon
         priority = priority ** self.priority_alpha
     
@@ -750,7 +749,7 @@ class MSFA_SF_NStep:
             previous_action = None # 
             
             # episode rewards
-            # reset_episode
+            # reset_episode this case we will manage only one episode. This would be like a accum_rewards
             self.episode_rewards = 0.0
             self.episode_loss = 0.0
             self.episode_q_loss = 0.0
@@ -805,12 +804,12 @@ class MSFA_SF_NStep:
                 phi_value = info['features'] # If phi is fixed is coming from Env.
                                 
                 # Only store if current state
-                self.n_step_replay_buffer.add(current_q_value_sf,
-                                              current_state,
-                                              hidden_state,
-                                              cell_state,
-                                              target_hidden_state,
-                                              target_cell_state,
+                self.n_step_replay_buffer.add(current_q_value_sf.cpu(),
+                                              current_state.cpu(),
+                                              hidden_state.cpu(),
+                                              cell_state.cpu(),
+                                              target_hidden_state.cpu(),
+                                              target_cell_state.cpu(),
                                               next_action, 
                                               reward,
                                               0,
@@ -818,7 +817,7 @@ class MSFA_SF_NStep:
 
                 # Accumulate episode rewards and losses. TODO Fix
                 # TODO Fix. ENV returns torch.Tensor|int for the reward
-                self.episode_rewards += reward.item() if isinstance(reward, torch.Tensor) else reward
+                self.episode_rewards += reward
                 
                 # Go to the next state
                 current_obs = next_obs
@@ -829,24 +828,32 @@ class MSFA_SF_NStep:
                 
                 if training_step > self.n_step_q_learning:
                     pre_q_value, state, h, c, target_h, target_c, action, reward, stack_count, phi = self.n_step_replay_buffer.get()
-                    priority = self.compute_priority(pre_q_value, action, reward, current_q_value_sf, target_q_value_sf, terminated)
+                    priority = self.compute_priority(pre_q_value, action, reward, current_q_value_sf.cpu(), target_q_value_sf.cpu(), terminated)
                     self.replay_buffer.add(state, h, c, target_h, target_c, action, reward, terminated, stack_count, priority, phi)
                 
                 # Empty n_step_replay_buffer
                 #########################################################
                 ### Logging source and target tasks performance
                 if terminated:
+                    self.n_episode += 1
                     while self.n_step_replay_buffer.size > 0:
                         pre_q_value, state, h, c, target_h, target_c, action, reward, stack_count, phi = self.n_step_replay_buffer.get()
-                        priority = self.compute_priority(pre_q_value, action, reward, current_q_value_sf, target_q_value_sf, terminated)
+                        priority = self.compute_priority(pre_q_value, action, reward, current_q_value_sf.cpu(), target_q_value_sf.cpu(), terminated)
                         self.replay_buffer.add(state, h, c, target_h, target_c, action, reward, terminated, stack_count, priority, phi)
+
+                    self.episode_start_index = self.replay_buffer.index
+                    self.set_seq_start_index() # Set the start index to train.
+                    
+                    self.n_step_replay_buffer = NStepMemory(self.n_step_q_learning, self.gamma) # This is to reset the Buffer memory.
                 
-                # reset once is terminated
-                # Training is a continual but we will measure the training episode once is terminated
-                    self.n_episode += 1                    
+                    # reset once is terminated
+                    # Training is a continual but we will measure the training episode once is terminated
+
+                if training_step % self.config.log_performance_n_training_steps == 0:
+                                      
                     self.logger.log_agent_performance(source_task_id, 
                                                       self.episode_rewards, 
-                                                      self.n_episode, 
+                                                      self.n_episode, # n_number of times terminated
                                                       training_step, 
                                                       self.episode_loss, 
                                                       self.episode_q_loss,
@@ -859,43 +866,37 @@ class MSFA_SF_NStep:
                     # current_action = None # reinit action
 
                     # Reset episode
-                    self.episode_rewards = 0.0
-                    self.episode_loss = 0.0
-                    self.episode_q_loss = 0.0
-                    self.episode_psi_loss = 0.0
-                    self.number_greedy_actions = 0
-                    
-                    self.episode_start_index = self.replay_buffer.index
-                    self.set_seq_start_index() # Set the start index to train.
-                    
-                    self.n_step_replay_buffer = NStepMemory(self.n_step_q_learning, self.gamma) # This is to reset the Buffer memory.
+                    # self.episode_rewards = 0.0
+                    # self.episode_loss = 0.0
+                    # self.episode_q_loss = 0.0
+                    # self.episode_psi_loss = 0.0
+                    # self.number_greedy_actions = 0
                 
                 ######################################################################################
                 # Training process models
                 ######################################################################################
                 # Any n_step_q_learning
-                if training_step % 1 == 0:
+                if training_step % 10 == 0:
                     
                     if self.n_episode == 0 and training_step > 200:
                         self.set_seq_start_index()
-                    
                     
                     replay_buffer, seq_index, index = self.replay_buffer.sample()
 
                     if replay_buffer is not None:
                         
                         # Update models in DQN style
-                        batch_states = replay_buffer['state']
-                        batch_actions = replay_buffer['action']
-                        batch_rewards = replay_buffer['reward']
-                        batch_next_states = replay_buffer['next_state']
-                        batch_terminated_masks = replay_buffer['done']
-                        batch_phis = replay_buffer['phi']
+                        batch_states = to_tensor(replay_buffer['state'])
+                        batch_actions = to_tensor(replay_buffer['action'])
+                        batch_rewards = to_tensor(replay_buffer['reward'])
+                        batch_next_states = to_tensor(replay_buffer['next_state'])
+                        batch_terminated_masks = to_tensor(replay_buffer['done']).to(dtype=torch.int)
+                        batch_phis = to_tensor(replay_buffer['phi'])
                         
-                        batch_hidden_states = replay_buffer['hs']
-                        batch_cell_states = replay_buffer['cs']
-                        batch_target_hidden_states = replay_buffer['target_hs']
-                        batch_target_cell_states = replay_buffer['target_cs']
+                        batch_hidden_states = to_tensor(replay_buffer['hs'])
+                        batch_cell_states = to_tensor(replay_buffer['cs'])
+                        batch_target_hidden_states = to_tensor(replay_buffer['target_hs'])
+                        batch_target_cell_states = to_tensor(replay_buffer['target_cs'])
                         
                         self.policy_network.set_recurrent_hidden_state(batch_hidden_states, batch_cell_states)
                         self.target_network.set_recurrent_hidden_state(batch_target_hidden_states, batch_target_cell_states)
@@ -1000,6 +1001,7 @@ class MSFA_SF_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
+                    # print('Mock testing every', self.evaluation_n_training_steps)
                     self.evaluate_target_tasks(training_step)
     
     @torch.no_grad()
@@ -1007,7 +1009,7 @@ class MSFA_SF_NStep:
         import time
         
         max_n_episodes = 2 # This can be part of the config
-        number_of_minutes = 60 * 2
+        number_of_minutes = 60 * 1
 
         for target_task_id, target_task in enumerate(self.target_tasks):
             
@@ -1031,40 +1033,34 @@ class MSFA_SF_NStep:
                     current_obs, current_state = self.process_current_state(obs, target_task)
                     
                     total_reward += reward
-            
+
             self.logger.log_agent_performance(target_task_id, 
                                               total_reward / max_n_episodes, 
                                               training_step,
                                               0.0,
                                               type_task='target')
 
-
-                    
-################################################################################################################################################
-############ MAIN
-################################################################################################################################################
-
 if __name__ == '__main__':
     import gymnasium as gym
     from minigrid.wrappers import RGBImgObsWrapper
     from envs.babyai.gotoavoid import PickupAndAvoid
-
+    
     # First is 
-    vector_to_reward = to_tensor([1,0,0,0])
+    vector_to_reward = [1,0,0,0]
     number_of_objects = len(vector_to_reward) * 3
-
+    
     training_envs = [RGBImgObsWrapper(PickupAndAvoid(number_of_objects, vector_to_reward))]
-    testing_envs = [RGBImgObsWrapper(PickupAndAvoid(number_of_objects, to_tensor([1,0,0,0]))), RGBImgObsWrapper(PickupAndAvoid(number_of_objects, to_tensor([0,0,1,1])))]
-
+    testing_envs = [RGBImgObsWrapper(PickupAndAvoid(number_of_objects, [1,0,0,0])), RGBImgObsWrapper(PickupAndAvoid(number_of_objects, [0,0,1,1]))]
+    
     config = DQNAgentConfig()
     config.gym_legacy = False
-
+    
     msf = MSFA_SF_NStep(training_envs, testing_envs, [vector_to_reward], config)
     msf.execute()
-
+    
     # for env in training_envs:
     #     env.reset()
     #     env.render()
-
+    
     # for env in training_envs:
     #     env.close()
