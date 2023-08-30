@@ -48,6 +48,7 @@ import fasteners
 import pickle
 
 
+
 class NStepMemory(dict):
     def __init__(self, memory_size=5, gamma=0.997):
         self.memory_size = memory_size
@@ -149,7 +150,7 @@ class ReplayMemory:
         self.memory['stack_count'][index] = stack_count
         self.memory['priority'][index] = priority
         self.memory['phi'][index] = phi
-        self.index += 1
+        self.index = (self.index + 1) % self.memory_size # Kiyo fix
     
     def extend(self, memory):
         start_index = self.index % self.memory_size
@@ -337,6 +338,8 @@ class ReplayMemory:
         batch['next_state'] = batch['next_state'].astype(np.float32) / 255.
         return batch, index
 
+
+
 class Logger:
     SOURCE_TASK = 'source'
     TARGET_TASK = 'target'
@@ -382,7 +385,7 @@ class SuccessorFeatureConfig:
 
 @dataclasses.dataclass
 class DQNAgentConfig:
-    epsilon: int = 0.9 # 0.99 # Borsa2020 keeps 0.1 fixed
+    epsilon: int = 0.99 # 0.99 # Borsa2020 keeps 0.1 fixed
     gym_legacy: bool = True
     batch_size: int = 32 # 32 # 128
     # n_training_steps: int = 50_000
@@ -624,6 +627,7 @@ class DQN_USFA_Model(torch.nn.Module):
                 
         return sf_values, q_values, hidden_state, cell_state
 
+    
 class MSFA_SF_NStep:
     """
     Modular Successor Feature Approximator Agent
@@ -723,6 +727,7 @@ class MSFA_SF_NStep:
         return priority
     
     def set_seq_start_index(self):
+        # Aware index should
         last_index = self.replay_buffer.index
         start_index  = self.episode_start_index
 
@@ -730,8 +735,11 @@ class MSFA_SF_NStep:
         seq_start_index.append(last_index - self.config.trace_length)
         seq_start_index = np.array(seq_start_index)
         self.replay_buffer.update_sequence_priority(seq_start_index)
-        self.replay_buffer.memory['is_seq_start'][seq_start_index] = 1
-    
+        try:
+            self.replay_buffer.memory['is_seq_start'][seq_start_index] = 1
+        except:
+            raise Exception(f'Error indexing {last_index, start_index, seq_start_index}')
+        
     def execute(self):
         # reset agent
         
@@ -779,7 +787,7 @@ class MSFA_SF_NStep:
                     target_sf, target_q_value_sf, target_hidden_state, target_cell_state = self.policy_network(current_state, env.vector_to_reward, previous_action)
                     
                     if (random.random() <= self.epsilon):
-                        next_action = previous_action
+                        next_action = env.action_space.sample()
                     else:
                         # USE GPI in target tasks
                         # USFA needs previous action.
@@ -824,7 +832,7 @@ class MSFA_SF_NStep:
                 current_state = next_state
                 previous_action = next_action
                 
-                # self.epsilon = max(self.epsilon * (1 - 1e-6), self.min_epsilon) # Have a minimum of exploration. Be aware epsilon.
+                self.epsilon = max(self.epsilon * (1 - 1e-7), self.min_epsilon) # Have a minimum of exploration. Be aware epsilon.
                 
                 if training_step > self.n_step_q_learning:
                     pre_q_value, state, h, c, target_h, target_c, action, reward, stack_count, phi = self.n_step_replay_buffer.get()
@@ -841,8 +849,8 @@ class MSFA_SF_NStep:
                         priority = self.compute_priority(pre_q_value, action, reward, current_q_value_sf.cpu(), target_q_value_sf.cpu(), terminated)
                         self.replay_buffer.add(state, h, c, target_h, target_c, action, reward, terminated, stack_count, priority, phi)
 
-                    self.episode_start_index = self.replay_buffer.index
                     self.set_seq_start_index() # Set the start index to train.
+                    self.episode_start_index = self.replay_buffer.index
                     
                     self.n_step_replay_buffer = NStepMemory(self.n_step_q_learning, self.gamma) # This is to reset the Buffer memory.
                 
@@ -850,7 +858,6 @@ class MSFA_SF_NStep:
                     # Training is a continual but we will measure the training episode once is terminated
 
                 if training_step % self.config.log_performance_n_training_steps == 0:
-                                      
                     self.logger.log_agent_performance(source_task_id, 
                                                       self.episode_rewards, 
                                                       self.n_episode, # n_number of times terminated
@@ -876,10 +883,8 @@ class MSFA_SF_NStep:
                 # Training process models
                 ######################################################################################
                 # Any n_step_q_learning
-                if training_step % 10 == 0:
-                    
-                    if self.n_episode == 0 and training_step > 200:
-                        self.set_seq_start_index()
+                minimum_exploration_steps = 1_000
+                if (training_step > minimum_exploration_steps) and (training_step % 10) == 0:
                     
                     replay_buffer, seq_index, index = self.replay_buffer.sample()
 
@@ -1033,12 +1038,14 @@ class MSFA_SF_NStep:
                     current_obs, current_state = self.process_current_state(obs, target_task)
                     
                     total_reward += reward
-
+            
             self.logger.log_agent_performance(target_task_id, 
                                               total_reward / max_n_episodes, 
                                               training_step,
                                               0.0,
                                               type_task='target')
+
+
 
 if __name__ == '__main__':
     import gymnasium as gym
