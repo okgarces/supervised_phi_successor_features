@@ -385,7 +385,7 @@ class SuccessorFeatureConfig:
 
 @dataclasses.dataclass
 class DQNAgentConfig:
-    epsilon: int = 0.99 # 0.99 # Borsa2020 keeps 0.1 fixed
+    epsilon: int = 0.1 # 0.99 # Borsa2020 keeps 0.1 fixed
     gym_legacy: bool = True
     batch_size: int = 32 # 32 # 128
     # n_training_steps: int = 50_000
@@ -490,6 +490,7 @@ class DQNConvolutionalNetwork(torch.nn.Module):
         return self.out_net(flat)
 
 # DQN_USF_MODEL
+# DQN_USF_MODEL
 
 class DQN_USFA_Model(torch.nn.Module):
     
@@ -537,7 +538,11 @@ class DQN_USFA_Model(torch.nn.Module):
         samples =  torch.normal(mean, torch.sqrt(std))
         
         return samples
-    
+
+    def reset_recurrent_hidden_state(self):
+        self.recurrent_hidden_state_train = None
+        self.recurrent_cell_state_train = None
+
     def set_recurrent_hidden_state(self, hidden_state, cell_state): # This set train hidden state
         if hidden_state.ndim == 2:
             hidden_state = hidden_state.unsqueeze(0) # Add trace dimension [n_trace, n_batch...]
@@ -597,9 +602,7 @@ class DQN_USFA_Model(torch.nn.Module):
         recurrent_input = torch.concat([vision_output, action_taken], dim=-1)
         recurrent_output, (hidden_state, cell_state) = self._recurrent_net(recurrent_input, (initial_hidden_state, initial_cell_state))
         
-        if n_batch>32: print(recurrent_output.shape, 'before')
         recurrent_output = self._f_recurrent(recurrent_output) # [n_trace, n_batch, hidden_lstm_size]
-        if n_batch>32: print(recurrent_output.shape, 'after')
         
         # recurrent_output = recurrent_output.unsqueeze(1).repeat(1, self.sf_config.d_z_samples, 1)
         recurrent_output = recurrent_output.view(n_batch, n_trace, -1)
@@ -627,7 +630,6 @@ class DQN_USFA_Model(torch.nn.Module):
                 
         return sf_values, q_values, hidden_state, cell_state
 
-    
 class MSFA_SF_NStep:
     """
     Modular Successor Feature Approximator Agent
@@ -832,7 +834,7 @@ class MSFA_SF_NStep:
                 current_state = next_state
                 previous_action = next_action
                 
-                self.epsilon = max(self.epsilon * (1 - 1e-7), self.min_epsilon) # Have a minimum of exploration. Be aware epsilon.
+                # self.epsilon = max(self.epsilon * (1 - 1e-7), self.min_epsilon) # Have a minimum of exploration. Be aware epsilon.
                 
                 if training_step > self.n_step_q_learning:
                     pre_q_value, state, h, c, target_h, target_c, action, reward, stack_count, phi = self.n_step_replay_buffer.get()
@@ -849,6 +851,9 @@ class MSFA_SF_NStep:
                         priority = self.compute_priority(pre_q_value, action, reward, current_q_value_sf.cpu(), target_q_value_sf.cpu(), terminated)
                         self.replay_buffer.add(state, h, c, target_h, target_c, action, reward, terminated, stack_count, priority, phi)
 
+                    self.policy_network.reset_recurrent_hidden_state()
+                    self.target_network.reset_recurrent_hidden_state()
+                    
                     self.set_seq_start_index() # Set the start index to train.
                     self.episode_start_index = self.replay_buffer.index
                     
