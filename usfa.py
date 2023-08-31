@@ -1,4 +1,4 @@
-import cv2
+# import cv2
 import numpy as np
 from time import gmtime, strftime
 import pandas as pd
@@ -37,18 +37,6 @@ class OAREmbedder:
         
         reward = torch.tanh(reward)
         return torch.cat((actions, reward), axis=-1)
-
-
-import numpy as np
-import torch
-from torch.utils.data.sampler import WeightedRandomSampler
-from collections import deque
-import os
-from time import time, sleep
-import gc
-import fasteners
-import pickle
-
 
 
 import numpy as np
@@ -1032,8 +1020,8 @@ class MSFA_SF_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
-                    print('Mock testing every', self.evaluation_n_training_steps)
-                    # self.evaluate_target_tasks(training_step)
+                    # print('Mock testing every', self.evaluation_n_training_steps)
+                    self.evaluate_target_tasks(training_step)
     
     @torch.no_grad()
     def evaluate_target_tasks(self, training_step):
@@ -1041,6 +1029,7 @@ class MSFA_SF_NStep:
         
         max_n_episodes = 2 # This can be part of the config
         number_of_minutes = 60 * 1
+        epsilon_target_tasks = 1e-4
 
         for target_task_id, target_task in enumerate(self.target_tasks):
             
@@ -1051,14 +1040,15 @@ class MSFA_SF_NStep:
                 
                 obs = target_task.reset()           
                 current_obs, current_state = self.process_current_state(obs, target_task)
-                action = target_task.action_space.sample()
-                
-                obs = target_task.reset()
+                action = target_task.get_no_op_action()
 
                 while time.time() <= max_episode_len:
-                    _, q_value, _, _ = self.policy_network(current_state, target_task.vector_to_reward, action)
-                    max_q_value_sf = torch.max(q_value, axis=1).values # [n_batch, d_z_samples, n_actions ]
-                    action = torch.argmax(max_q_value_sf, dim=1).item() # [n_batch, n_actions ]
+                    if (random.random() <= epsilon_target_tasks):
+                        action = target_task.action_space.sample()
+                    else:
+                        _, q_value, _, _ = self.policy_network(current_state, target_task.vector_to_reward, action)
+                        max_q_value_sf = torch.max(q_value, axis=1).values # [n_batch, d_z_samples, n_actions ]
+                        action = torch.argmax(max_q_value_sf, dim=1).item() # [n_batch, n_actions ]
                     
                     obs, reward, *_ = target_task.step(action)
                     current_obs, current_state = self.process_current_state(obs, target_task)
