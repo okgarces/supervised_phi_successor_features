@@ -409,7 +409,7 @@ class SuccessorFeatureConfig:
 
 @dataclasses.dataclass
 class DQNAgentConfig:
-    epsilon: int = 0.1  # 0.99 # Borsa2020 keeps 0.1 fixed
+    epsilon: int = 0.99  # 0.99 # Borsa2020 keeps 0.1 fixed
     gym_legacy: bool = True
     batch_size: int = 32  # 32 # 128
     # n_training_steps: int = 50_000
