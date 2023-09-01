@@ -423,7 +423,7 @@ class DQNAgentConfig:
     n_replay_samples: int = 100_000
     trace_length: int = 40
     overlap_length: int = 20  # Default according R2D2 paper
-    priority_alpha: float = 0.6
+    priority_alpha: float = 0.0 # According to Carvalho2023 is 0.
     priority_epsilon: float = 1e-6
     burn_in_length: int = 0
 
@@ -545,8 +545,16 @@ class DQN_USFA_Model(torch.nn.Module):
             torch.nn.ReLU()
         )
 
+        policy_embedding_dim = 32
+
+        self._policy_embedding = torch.nn.Sequential(
+            torch.nn.Linear(self.sf_config.features_dim, policy_embedding_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(policy_embedding_dim, policy_embedding_dim)
+        )
+
         self._sf_model = torch.nn.Sequential(
-            torch.nn.Linear(self.sf_config.states_dim + self.sf_config.features_dim, 128 * 2),
+            torch.nn.Linear(self.sf_config.states_dim + policy_embedding_dim, 128 * 2),
             torch.nn.ReLU(),
             torch.nn.Linear(128 * 2, 512),
             torch.nn.ReLU(),
@@ -597,8 +605,7 @@ class DQN_USFA_Model(torch.nn.Module):
         n_trace = inputs.shape[0]
 
         vision_input = inputs.reshape(-1, self.vision_config.input_channel, inputs.shape[3], inputs.shape[4])
-        vision_output = self._vision_net(vision_input).view(n_trace, n_batch,
-                                                            -1)  # [n_batch, n_trace, dim] restore trace dim
+        vision_output = self._vision_net(vision_input).view(n_trace, n_batch, -1)  # [n_batch, n_trace, dim] restore trace dim
 
         # Initialize recurrent hideen states and cell states
         initial_hidden_state, initial_cell_state = None, None
@@ -648,10 +655,13 @@ class DQN_USFA_Model(torch.nn.Module):
             reward_mapper_exp = reward_mapper_exp.repeat(self.sf_config.d_z_samples, 1)  # [d_z_samples, d_features]
 
             z_samples = self._sample_gaussian(reward_mapper_exp)
-            # z_samples = z_samples.view(n_trace, n_batch, -1)
-            z_samples = z_samples.unsqueeze(0).unsqueeze(0).repeat(n_trace, n_batch, 1, 1)
+            # # z_samples = z_samples.view(n_trace, n_batch, -1)
+            # z_samples = z_samples.unsqueeze(0).unsqueeze(0).repeat(n_trace, n_batch, 1, 1)
 
-        inputs_to_sf = torch.cat([recurrent_output, z_samples], dim=-1)
+        policy_embedding = self._policy_embedding(z_samples)
+        policy_embedding = policy_embedding.unsqueeze(0).unsqueeze(0).repeat(n_trace, n_batch, 1, 1)
+
+        inputs_to_sf = torch.cat([recurrent_output, policy_embedding], dim=-1)
         sf_values = self._sf_model(inputs_to_sf).view(n_trace, n_batch, self.sf_config.d_z_samples,
                                                       self.sf_config.n_actions, self.sf_config.features_dim)
 
@@ -681,6 +691,7 @@ class MSFA_SF_NStep:
         self.logger = Logger('')
 
         self.config = config
+        self.sf_config = SuccessorFeatureConfig()
 
         # self.n_acton
         self.epsilon = config.epsilon
@@ -716,6 +727,9 @@ class MSFA_SF_NStep:
 
         self.target_network = DQN_USFA_Model().to(device)
         self.policy_network = DQN_USFA_Model().to(device)
+
+        with torch.no_grad():
+            self.target_network.load_state_dict(self.policy_network.state_dict())
 
         self.optimizer = torch.optim.Adam(self.policy_network.parameters(), lr=config.learning_rate)
         self.gamma = config.gamma
@@ -874,8 +888,7 @@ class MSFA_SF_NStep:
                 current_state = next_state
                 previous_action = next_action
 
-                self.epsilon = max(self.epsilon * (1 - 1e-6),
-                                   self.min_epsilon)  # Have a minimum of exploration. Be aware epsilon.
+                self.epsilon = max(self.epsilon * (1 - 1e-6), self.min_epsilon)  # Have a minimum of exploration. Be aware epsilon.
 
                 if training_step > self.n_step_q_learning:
                     pre_q_value, state, h, c, target_h, target_c, action, reward, stack_count, phi = self.n_step_replay_buffer.get()
@@ -935,6 +948,7 @@ class MSFA_SF_NStep:
                 ######################################################################################
                 # Any n_step_q_learning
                 minimum_exploration_steps = 1_000
+                number_of_sgd_steps = 40
                 if (training_step > minimum_exploration_steps) and (training_step % 10) == 0:
 
                     replay_buffer, seq_index, index = self.replay_buffer.sample()
@@ -984,40 +998,35 @@ class MSFA_SF_NStep:
                             next_actions = torch.argmax(target_q_value_sf , axis=3, keepdim=True)  # GPI to get actions
                             max_target_q_value_sf = max_target_q_value_sf.gather(3, next_actions)
 
+                            next_actions_sf = next_actions.unsqueeze(-1).repeat(1,1,1,1,self.sf_config.features_dim)
+
+                            max_target_sf_value = target_sf.gather(3, next_actions_sf)
+
                             target_q_values = batch_rewards + (gammas * (1 - batch_terminated_masks)) * max_target_q_value_sf.view(self.config.trace_length, self.n_batch, -1)  # Remove last dimension no needed
+                            target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples,1,1))) * max_target_sf_value
 
                         current_sf, current_q_value_sf, *_ = self.policy_network(batch_states, env.vector_to_reward,
                                                                                  batch_prev_actions, 'train')
 
                         #  [n_trace, n_batch, d_z_sample, n_actions, d_features]
                         # current q value
-                        batch_actions = to_tensor(batch_actions).to(dtype=torch.int64).unsqueeze(2).repeat(1, 1, 30, 1)  # Same dimensions in the samples. In this case 30 is the number of z samples.
-                        # max_current_q_values_indices = current_q_value_sf.max(axis=2, keepdim=True)
-
+                        batch_actions = to_tensor(batch_actions).to(dtype=torch.int64).unsqueeze(2).repeat(1, 1, self.sf_config.d_z_samples, 1)  # Same dimensions in the samples. In this case 30 is the number of z samples.
                         current_q_value_sf = current_q_value_sf.gather(3, batch_actions).view(self.config.trace_length, self.n_batch, -1)
-                        # current_q_value_sf = current_q_value_sf.reshape(current_q_value_sf.shape[0],
-                        #                                                 current_q_value_sf.shape[1],
-                        #                                                 -1)  # keep [n_trace, n_batch, 1]
-
-                        # current_actions_sf = batch_actions.unsqueeze(-1).repeat(1, 1, 1, 1,
-                        #                                                         4)  # Add features dimension in actions.
-                        # max_q_values_from_z_samples = max_current_q_values_indices.indices.unsqueeze(-1).repeat(1, 1, 1,
-                        #                                                                                         1, 4)
-
-                        # current_sf = current_sf.gather(2, max_q_values_from_z_samples).gather(3, current_actions_sf)
-                        # current_sf = current_sf.reshape(current_q_value_sf.shape[0], current_q_value_sf.shape[1], -1)
+                        current_actions_sf = batch_actions.unsqueeze(-1).repeat(1, 1, 1, 1, self.sf_config.features_dim)  # Add features dimension in actions.
+                        current_sf = current_sf.gather(3, current_actions_sf)
 
                         # First loss Q-Loss
                         q_loss = self.loss(target_q_values, current_q_value_sf)
-                        #psi_loss = self.loss(target_sf_values, current_sf)
-                        #phi_loss = self.loss(to_tensor(torch.tensor(0, dtype=torch.float64)),
-                                             #to_tensor(torch.tensor(0, dtype=torch.float64)))
+                        psi_loss = self.loss(target_sf_values, current_sf)
+                        phi_loss = self.loss(to_tensor(torch.tensor(0, dtype=torch.float64)), to_tensor(torch.tensor(0, dtype=torch.float64)))
 
-                        accum_loss = q_loss #+ 1.0 * psi_loss + 1.0 * phi_loss
+                        accum_loss = 0.5 * q_loss + 1.0 * psi_loss + 1.0 * phi_loss
 
                         self.optimizer.zero_grad()
                         accum_loss.backward()
-                        self.optimizer.step()
+
+                        for _  in range(number_of_sgd_steps):
+                            self.optimizer.step()
 
                         # Add episode loss when update statistics
                         self.episode_loss += accum_loss.item()
@@ -1062,9 +1071,8 @@ class MSFA_SF_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
-                    # print('Mock testing every', self.evaluation_n_training_steps)
-                    self.evaluate_target_tasks(training_step)
-
+                    print('Mock testing every', self.evaluation_n_training_steps)
+                    # self.evaluate_target_tasks(training_step)
     @torch.no_grad()
     def evaluate_target_tasks(self, training_step):
         import time
