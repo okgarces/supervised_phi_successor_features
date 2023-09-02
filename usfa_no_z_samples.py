@@ -409,15 +409,15 @@ class SuccessorFeatureConfig:
 
 @dataclasses.dataclass
 class DQNAgentConfig:
-    epsilon: int = 0.99  # 0.99 # Borsa2020 keeps 0.1 fixed
-    gym_legacy: bool = True
+    epsilon: int = 0.1 # 0.99 # Borsa2020 keeps 0.1 fixed
+    gym_legacy: bool = False
     batch_size: int = 32  # 32 # 128
     # n_training_steps: int = 50_000
     n_training_steps: int = 4_000_000
-    evaluation_n_training_steps: int = 10_000
+    evaluation_n_training_steps: int = 100_000
     log_performance_n_training_steps: int = 2_500  # This is not part of Carvalho2023
     n_step_q_learning: int = 5  # Default in Carvalho2023
-    episode_length: int = 60  # According to Barreto2018, Barreto2017 this is 1 minute.
+    episode_length_seconds: int = 60  # According to Barreto2018, Barreto2017 this is 1 minute.
 
     # Replay buffer
     n_replay_samples: int = 100_000
@@ -434,7 +434,7 @@ class DQNAgentConfig:
     # Target network updates hyperparameters
     n_steps_update_target_model: int = 1_000
     use_target_soft_update: int = True
-    target_update_tau: float = 5e-3
+    target_update_tau: float = 1e-3
 
 
 @dataclasses.dataclass
@@ -702,7 +702,6 @@ class MSFA_SF_NStep:
         self.n_training_steps = config.n_training_steps
         self.evaluation_n_training_steps = config.evaluation_n_training_steps
         self.log_performance_n_training_steps = config.log_performance_n_training_steps
-        self.episode_length = config.episode_length
         self.priority_alpha = config.priority_alpha
         self.priority_epsilon = config.priority_epsilon
 
@@ -1071,18 +1070,18 @@ class MSFA_SF_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
-                    print('Mock testing every', self.evaluation_n_training_steps)
-                    # self.evaluate_target_tasks(training_step)
+                    # print('Mock testing every', self.evaluation_n_training_steps)
+                    self.evaluate_target_tasks(training_step)
     @torch.no_grad()
     def evaluate_target_tasks(self, training_step):
         import time
 
-        max_n_episodes = 2  # This can be part of the config
-        number_of_minutes = 60 * 1
-        epsilon_target_tasks = 1e-4
+        max_n_episodes = 10  # This can be part of the config
+        number_of_minutes = self.config.episode_length_seconds * 1
+        epsilon_target_tasks = 1e-3
 
         for target_task_id, target_task in enumerate(self.target_tasks):
-
+            target_task_vector_tensor = to_tensor(target_task.vector_to_reward)
             total_reward = 0
 
             for n_episode in range(max_n_episodes):
@@ -1096,9 +1095,16 @@ class MSFA_SF_NStep:
                     if (random.random() <= epsilon_target_tasks):
                         action = target_task.action_space.sample()
                     else:
-                        _, q_value, _, _ = self.policy_network(current_state, target_task.vector_to_reward, action)
-                        max_q_value_sf = torch.max(q_value, axis=1).values  # [n_batch, d_z_samples, n_actions ]
-                        action = torch.argmax(max_q_value_sf, dim=1).item()  # [n_batch, n_actions ]
+                        # Using GPI according to Borsa2019. max z_samples and max over training tasks.
+                        # [1, d_z_samples, n_actions]
+                        q_value = torch.zeros(1, 1, self.sf_config.n_actions)
+                        for source_task in self.source_tasks:
+                            source_sf, *_ = self.policy_network(current_state, source_task.vector_to_reward, action)
+                            source_q_value = torch.matmul(source_sf, target_task_vector_tensor).max(axis=1, keepdim=True).values # GPI
+                            q_value = torch.cat([q_value, source_q_value], axis=1) # cat in the d_z_sample dimension. Now is the policy dimension
+
+                        max_q_value_sf = torch.max(q_value, axis=1).values  # [n_batch, d_z_samples/source_policies_dim, n_actions ]
+                        action = torch.argmax(max_q_value_sf, dim=1).item()  # [n_batch, n_actions]
 
                     obs, reward, *_ = target_task.step(action)
                     current_obs, current_state = self.process_current_state(obs, target_task)
@@ -1126,7 +1132,6 @@ if __name__ == '__main__':
                     RGBImgObsWrapper(PickupAndAvoid(number_of_objects, [0, 0, 1, 1]))]
 
     config = DQNAgentConfig()
-    config.gym_legacy = False
 
     msf = MSFA_SF_NStep(training_envs, testing_envs, [vector_to_reward], config)
     msf.execute()
