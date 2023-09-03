@@ -554,11 +554,11 @@ class DQN_USFA_Model(torch.nn.Module):
         )
 
         self._sf_model = torch.nn.Sequential(
-            torch.nn.Linear(self.sf_config.states_dim + policy_embedding_dim, 128 * 2),
+            torch.nn.Linear(self.sf_config.states_dim + policy_embedding_dim, 128),
             torch.nn.ReLU(),
-            torch.nn.Linear(128 * 2, 256),
-            torch.nn.ReLU(),
-            torch.nn.Linear(256, self.sf_config.features_dim * self.sf_config.n_actions)
+            # torch.nn.Linear(128 * 2, 256),
+            # torch.nn.ReLU(),
+            torch.nn.Linear(128, self.sf_config.features_dim * self.sf_config.n_actions)
         )
 
     def _sample_gaussian(self, mean):
@@ -642,7 +642,7 @@ class DQN_USFA_Model(torch.nn.Module):
 
         # recurrent_output = recurrent_output.unsqueeze(1).repeat(1, self.sf_config.d_z_samples, 1)
         # recurrent_output = recurrent_output.view(n_trace, n_batch, -1)
-        recurrent_output = recurrent_output.unsqueeze(-2).repeat(1, 1, self.sf_config.d_z_samples, 1)
+        recurrent_output = recurrent_output.unsqueeze(-2).repeat(1, 1, self.sf_config.d_z_samples + 1, 1) # TODO FIX D_z samples
 
         with torch.no_grad():
             # Reward mapper as mean of the guassian distribution
@@ -650,20 +650,24 @@ class DQN_USFA_Model(torch.nn.Module):
             reward_mapper_exp = reward_mapper.unsqueeze(0)  # [1, d_features]
             # # n_trace can be renamed to n_samples from z distributions
             # reward_mapper_exp = reward_mapper_exp.repeat(n_trace, n_batch, self.sf_config.d_z_samples, 1) # [n_batch, d_z_samples, d_features]
-            reward_mapper_exp = reward_mapper_exp.repeat(self.sf_config.d_z_samples, 1)  # [d_z_samples, d_features]
+            reward_mapper_exp_samples = reward_mapper_exp.repeat(self.sf_config.d_z_samples, 1)  # [d_z_samples, d_features]
 
-            z_samples = self._sample_gaussian(reward_mapper_exp)
+            z_samples = self._sample_gaussian(reward_mapper_exp_samples)
+            z_samples = torch.cat([z_samples, reward_mapper_exp], axis=0) # [d_z_samples + 1, d_features]
             # # z_samples = z_samples.view(n_trace, n_batch, -1)
             # z_samples = z_samples.unsqueeze(0).unsqueeze(0).repeat(n_trace, n_batch, 1, 1)
+
+        d_zamples_dim = z_samples.shape[0] # [d_z_samples + 1, d_features]
 
         policy_embedding = self._policy_embedding(z_samples)
         policy_embedding = policy_embedding.unsqueeze(0).unsqueeze(0).repeat(n_trace, n_batch, 1, 1)
 
         inputs_to_sf = torch.cat([recurrent_output, policy_embedding], dim=-1)
-        sf_values = self._sf_model(inputs_to_sf).view(n_trace, n_batch, self.sf_config.d_z_samples,
+        sf_values = self._sf_model(inputs_to_sf).view(n_trace, n_batch, d_zamples_dim,
                                                       self.sf_config.n_actions, self.sf_config.features_dim)
+        # [n_trace, n_batch, d_zamples + 1, n_actions, d_features]
 
-        q_values = torch.matmul(sf_values, reward_mapper)
+        q_values = (sf_values * z_samples.unsqueeze(0).unsqueeze(0).unsqueeze(-2)).sum(axis=-1)
         # Borsa2020 paper said the rollout computes with the reward maper.
         if mode == 'rollout':
             q_values = q_values[-1, :]
@@ -848,7 +852,7 @@ class MSFA_SF_NStep:
                         # USFA needs previous action.
                         # Perform GPI on z_samples according to Borsa2020
                         # From [n_batch, d_z_samples, n_actions ] Suppose dimensiosn are [n_batch, d_z_samples, n_actions] because it's a rollout
-                        max_q_value_sf = torch.max(current_q_value_sf, axis=1).values  # [n_batch, d_z_samples, n_actions ]
+                        max_q_value_sf = torch.max(current_q_value_sf, axis=1).values  # [n_batch, d_z_samples + 1, n_actions ]
                         next_action = torch.argmax(max_q_value_sf, dim=1).item()  # [n_batch, n_actions ]
 
                         self.number_greedy_actions += 1
@@ -1002,12 +1006,12 @@ class MSFA_SF_NStep:
                             max_target_sf_value = target_sf.gather(3, next_actions_sf)
 
                             target_q_values = batch_rewards + (gammas * (1 - batch_terminated_masks)) * max_target_q_value_sf.view(self.config.trace_length, self.n_batch, -1)  # Remove last dimension no needed
-                            target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples,1,1))) * max_target_sf_value
+                            target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1))) * max_target_sf_value
 
 
                         #  [n_trace, n_batch, d_z_sample, n_actions, d_features]
                         # current q value
-                        batch_actions = to_tensor(batch_actions).to(dtype=torch.int64).unsqueeze(2).repeat(1, 1, self.sf_config.d_z_samples, 1)  # Same dimensions in the samples. In this case 30 is the number of z samples.
+                        batch_actions = to_tensor(batch_actions).to(dtype=torch.int64).unsqueeze(2).repeat(1, 1, self.sf_config.d_z_samples + 1, 1)  # Same dimensions in the samples. In this case 30 is the number of z samples.
                         current_q_value_sf = current_q_value_sf.gather(3, batch_actions).view(self.config.trace_length, self.n_batch, -1)
                         current_actions_sf = batch_actions.unsqueeze(-1).repeat(1, 1, 1, 1, self.sf_config.features_dim)  # Add features dimension in actions.
                         current_sf = current_sf.gather(3, current_actions_sf)
@@ -1017,7 +1021,7 @@ class MSFA_SF_NStep:
                         psi_loss = self.loss(target_sf_values, current_sf)
                         phi_loss = self.loss(to_tensor(torch.tensor(0, dtype=torch.float64)), to_tensor(torch.tensor(0, dtype=torch.float64)))
 
-                        accum_loss = 0.5 * q_loss + 1.0 * psi_loss + 1.0 * phi_loss
+                        accum_loss = 1.0 * q_loss + 1.0 * psi_loss + 1.0 * phi_loss
 
                         self.optimizer.zero_grad()
                         accum_loss.backward()
@@ -1068,8 +1072,8 @@ class MSFA_SF_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
-                    #print('Mock testing every', self.evaluation_n_training_steps)
-                    self.evaluate_target_tasks(training_step)
+                    print('Mock testing every', self.evaluation_n_training_steps)
+                    # self.evaluate_target_tasks(training_step)
     @torch.no_grad()
     def evaluate_target_tasks(self, training_step):
         import time
@@ -1097,12 +1101,12 @@ class MSFA_SF_NStep:
                         # [1, d_z_samples, n_actions]
                         q_value = torch.zeros(1, 1, self.sf_config.n_actions).to(device=device)
                         for source_task in self.source_tasks:
-                            source_sf, *_ = self.policy_network(current_state, source_task.vector_to_reward, action)
-                            source_q_value = torch.matmul(source_sf, target_task_vector_tensor).max(axis=1, keepdim=True).values # GPI
+                            source_sf, source_q_value, *_ = self.policy_network(current_state, source_task.vector_to_reward, action)
+                            source_q_value = source_q_value.max(axis=1, keepdim=True).values # GPI
                             q_value = torch.cat([q_value, source_q_value], axis=1) # cat in the d_z_sample dimension. Now is the policy dimension
 
-                        max_q_value_sf = torch.max(q_value, axis=1).values  # [n_batch, d_z_samples/source_policies_dim, n_actions ]
-                        action = torch.argmax(max_q_value_sf, dim=1).item()  # [n_batch, n_actions]
+                        max_q_value_sf = torch.max(q_value, axis=1).values  # [n_trace, n_batch, d_z_samples/source_policies_dim, n_actions ]
+                        action = torch.argmax(max_q_value_sf, dim=1).item()  # [n_trace, n_batch, n_actions]
 
                     obs, reward, *_ = target_task.step(action)
                     current_obs, current_state = self.process_current_state(obs, target_task)
