@@ -10,7 +10,7 @@ import random
 import torch.functional as F
 
 # device = 'cuda:0'
-device = 'cpu'
+device = 'cuda:0'
 
 to_tensor = lambda x: torch.tensor(x, device=device, dtype=torch.float32) if not isinstance(x, torch.Tensor) else x.to(
     device)
@@ -556,11 +556,9 @@ class DQN_USFA_Model(torch.nn.Module):
         self._sf_model = torch.nn.Sequential(
             torch.nn.Linear(self.sf_config.states_dim + policy_embedding_dim, 128 * 2),
             torch.nn.ReLU(),
-            torch.nn.Linear(128 * 2, 512),
+            torch.nn.Linear(128 * 2, 256),
             torch.nn.ReLU(),
-            torch.nn.Linear(512, 512),
-            torch.nn.ReLU(),
-            torch.nn.Linear(512, self.sf_config.features_dim * self.sf_config.n_actions)
+            torch.nn.Linear(256, self.sf_config.features_dim * self.sf_config.n_actions)
         )
 
     def _sample_gaussian(self, mean):
@@ -980,6 +978,8 @@ class MSFA_SF_NStep:
                         # phi = phi[:,0,:]
 
                         # next actions? For the Q value network we should have the next action
+                        current_sf, current_q_value_sf, *_ = self.policy_network(batch_states, env.vector_to_reward,
+                                                                                 batch_prev_actions, 'train')
 
                         # For periodic environments
                         with torch.no_grad():
@@ -994,7 +994,7 @@ class MSFA_SF_NStep:
                             # max_target_q_values_indices = torch.max(target_q_value_sf, axis=2, keepdim=True)
                             # max_target_q_value_sf = max_target_q_values_indices.values  # Perform GPI over z_samples
                             max_target_q_value_sf = target_q_value_sf
-                            next_actions = torch.argmax(target_q_value_sf , axis=3, keepdim=True)  # GPI to get actions
+                            next_actions = torch.argmax(current_q_value_sf , axis=3, keepdim=True)  # GPI to get actions Double DQN
                             max_target_q_value_sf = max_target_q_value_sf.gather(3, next_actions)
 
                             next_actions_sf = next_actions.unsqueeze(-1).repeat(1,1,1,1,self.sf_config.features_dim)
@@ -1004,8 +1004,6 @@ class MSFA_SF_NStep:
                             target_q_values = batch_rewards + (gammas * (1 - batch_terminated_masks)) * max_target_q_value_sf.view(self.config.trace_length, self.n_batch, -1)  # Remove last dimension no needed
                             target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples,1,1))) * max_target_sf_value
 
-                        current_sf, current_q_value_sf, *_ = self.policy_network(batch_states, env.vector_to_reward,
-                                                                                 batch_prev_actions, 'train')
 
                         #  [n_trace, n_batch, d_z_sample, n_actions, d_features]
                         # current q value
@@ -1070,7 +1068,7 @@ class MSFA_SF_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
-                    # print('Mock testing every', self.evaluation_n_training_steps)
+                    #print('Mock testing every', self.evaluation_n_training_steps)
                     self.evaluate_target_tasks(training_step)
     @torch.no_grad()
     def evaluate_target_tasks(self, training_step):
@@ -1097,7 +1095,7 @@ class MSFA_SF_NStep:
                     else:
                         # Using GPI according to Borsa2019. max z_samples and max over training tasks.
                         # [1, d_z_samples, n_actions]
-                        q_value = torch.zeros(1, 1, self.sf_config.n_actions)
+                        q_value = torch.zeros(1, 1, self.sf_config.n_actions).to(device=device)
                         for source_task in self.source_tasks:
                             source_sf, *_ = self.policy_network(current_state, source_task.vector_to_reward, action)
                             source_q_value = torch.matmul(source_sf, target_task_vector_tensor).max(axis=1, keepdim=True).values # GPI
