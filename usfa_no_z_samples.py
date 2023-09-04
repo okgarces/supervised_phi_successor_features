@@ -10,7 +10,7 @@ import random
 import torch.functional as F
 
 # device = 'cuda:0'
-device = 'cuda:0'
+device = 'cpu'
 
 to_tensor = lambda x: torch.tensor(x, device=device, dtype=torch.float32) if not isinstance(x, torch.Tensor) else x.to(
     device)
@@ -433,8 +433,9 @@ class DQNAgentConfig:
 
     # Target network updates hyperparameters
     n_steps_update_target_model: int = 1_000
-    use_target_soft_update: int = True
+    use_target_soft_update: bool = True
     target_update_tau: float = 1e-3
+    use_full_loss: bool = False
 
 
 @dataclasses.dataclass
@@ -1000,28 +1001,30 @@ class MSFA_SF_NStep:
                             max_target_q_value_sf = target_q_value_sf
                             next_actions = torch.argmax(current_q_value_sf , axis=3, keepdim=True)  # GPI to get actions Double DQN
                             max_target_q_value_sf = max_target_q_value_sf.gather(3, next_actions)
-
-                            next_actions_sf = next_actions.unsqueeze(-1).repeat(1,1,1,1,self.sf_config.features_dim)
-
-                            max_target_sf_value = target_sf.gather(3, next_actions_sf)
-
                             target_q_values = batch_rewards + (gammas * (1 - batch_terminated_masks)) * max_target_q_value_sf.view(self.config.trace_length, self.n_batch, -1)  # Remove last dimension no needed
-                            target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1))) * max_target_sf_value
+
+                            if self.config.use_full_loss: # Use full loss psi + phi + q_losses (Auxiliary tasks)
+                                next_actions_sf = next_actions.unsqueeze(-1).repeat(1,1,1,1,self.sf_config.features_dim)
+                                max_target_sf_value = target_sf.gather(3, next_actions_sf)
+                                target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1))) * max_target_sf_value
 
 
                         #  [n_trace, n_batch, d_z_sample, n_actions, d_features]
                         # current q value
                         batch_actions = to_tensor(batch_actions).to(dtype=torch.int64).unsqueeze(2).repeat(1, 1, self.sf_config.d_z_samples + 1, 1)  # Same dimensions in the samples. In this case 30 is the number of z samples.
                         current_q_value_sf = current_q_value_sf.gather(3, batch_actions).view(self.config.trace_length, self.n_batch, -1)
-                        current_actions_sf = batch_actions.unsqueeze(-1).repeat(1, 1, 1, 1, self.sf_config.features_dim)  # Add features dimension in actions.
-                        current_sf = current_sf.gather(3, current_actions_sf)
 
                         # First loss Q-Loss
                         q_loss = self.loss(target_q_values, current_q_value_sf)
-                        psi_loss = self.loss(target_sf_values, current_sf)
-                        phi_loss = self.loss(to_tensor(torch.tensor(0, dtype=torch.float64)), to_tensor(torch.tensor(0, dtype=torch.float64)))
 
-                        accum_loss = 1.0 * q_loss + 1.0 * psi_loss + 1.0 * phi_loss
+                        if self.config.use_full_loss:
+                            current_actions_sf = batch_actions.unsqueeze(-1).repeat(1, 1, 1, 1, self.sf_config.features_dim)  # Add features dimension in actions.
+                            current_sf = current_sf.gather(3, current_actions_sf)
+                            psi_loss = self.loss(target_sf_values, current_sf)
+                            phi_loss = self.loss(to_tensor(torch.tensor(0, dtype=torch.float64)), to_tensor(torch.tensor(0, dtype=torch.float64)))
+                            accum_loss = 0.5 * q_loss + 1.0 * psi_loss + 1.0 * phi_loss
+                        else:
+                            accum_loss = q_loss
 
                         self.optimizer.zero_grad()
                         accum_loss.backward()
