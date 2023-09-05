@@ -418,6 +418,7 @@ class DQNAgentConfig:
     log_performance_n_training_steps: int = 2_500  # This is not part of Carvalho2023
     n_step_q_learning: int = 5  # Default in Carvalho2023
     episode_length_seconds: int = 60  # According to Barreto2018, Barreto2017 this is 1 minute.
+    max_gradient_norm: float = 80
 
     # Replay buffer
     n_replay_samples: int = 100_000
@@ -1028,6 +1029,8 @@ class MSFA_SF_NStep:
 
                         self.optimizer.zero_grad()
                         accum_loss.backward()
+
+                        torch.nn.utils.clip_grad_norm_(self.policy_network.parameters(), self.config.max_gradient_norm)
 
                         for _  in range(number_of_sgd_steps):
                             self.optimizer.step()
