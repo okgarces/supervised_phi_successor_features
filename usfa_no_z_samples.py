@@ -790,9 +790,10 @@ class MSFA_SF_NStep:
         last_index = self.replay_buffer.index
         start_index = self.episode_start_index
 
-        seq_start_index = [i for i in
-                           range(start_index, last_index - self.config.trace_length, self.config.overlap_length)]
-        seq_start_index.append(last_index - self.config.trace_length)
+        stop_index = max(last_index - self.config.trace_length, start_index)
+
+        seq_start_index = [i for i in range(start_index, stop_index, self.config.overlap_length)]
+        seq_start_index.append(stop_index)
         seq_start_index = np.array(seq_start_index)
         self.replay_buffer.update_sequence_priority(seq_start_index)
         try:
