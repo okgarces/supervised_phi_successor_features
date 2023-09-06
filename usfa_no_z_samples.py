@@ -983,10 +983,6 @@ class MSFA_SF_NStep:
                         # terminated_masks = terminated_masks[:,0,:]
                         # phi = phi[:,0,:]
 
-                        # next actions? For the Q value network we should have the next action
-                        current_sf, current_q_value_sf, *_ = self.policy_network(batch_states, env.vector_to_reward,
-                                                                                 batch_prev_actions, 'train')
-
                         # For periodic environments
                         with torch.no_grad():
                             # Terminated states have 0 value
@@ -995,12 +991,14 @@ class MSFA_SF_NStep:
                                                                                    env.vector_to_reward, batch_actions,
                                                                                    'train')  # USFA needs states and actions?
 
+                            target_q_value_policy_network = self.policy_network(batch_next_states, env.vector_to_reward, batch_actions, 'train')[1] # index 1 is the q_value
+
                             # Computa target q values
                             # [n_batch, n_trace, d_z_samples, n_actions]
                             # max_target_q_values_indices = torch.max(target_q_value_sf, axis=2, keepdim=True)
                             # max_target_q_value_sf = max_target_q_values_indices.values  # Perform GPI over z_samples
                             max_target_q_value_sf = target_q_value_sf
-                            next_actions = torch.argmax(current_q_value_sf , axis=3, keepdim=True)  # GPI to get actions Double DQN
+                            next_actions = torch.argmax(target_q_value_policy_network , axis=3, keepdim=True)  # GPI to get actions Double DQN
                             max_target_q_value_sf = max_target_q_value_sf.gather(3, next_actions)
                             target_q_values = batch_rewards + (gammas * (1 - batch_terminated_masks)) * max_target_q_value_sf.view(self.config.trace_length, self.n_batch, -1)  # Remove last dimension no needed
 
@@ -1009,7 +1007,10 @@ class MSFA_SF_NStep:
                                 max_target_sf_value = target_sf.gather(3, next_actions_sf)
                                 target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1))) * max_target_sf_value
 
-
+                        # next actions? For the Q value network we should have the next action
+                        current_sf, current_q_value_sf, *_ = self.policy_network(batch_states,
+                                                                                 env.vector_to_reward,
+                                                                                 batch_prev_actions, 'train')
                         #  [n_trace, n_batch, d_z_sample, n_actions, d_features]
                         # current q value
                         batch_actions = to_tensor(batch_actions).to(dtype=torch.int64).unsqueeze(2).repeat(1, 1, self.sf_config.d_z_samples + 1, 1)  # Same dimensions in the samples. In this case 30 is the number of z samples.
