@@ -8,6 +8,7 @@ import torch
 import numpy as np
 import random
 import torch.functional as F
+from torch.optim import lr_scheduler
 
 # device = 'cuda:0'
 device = 'cpu'
@@ -429,7 +430,9 @@ class DQNAgentConfig:
     burn_in_length: int = 0
 
     # DQN config
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-2
+    min_learning_rate_factor: float = 1e-4
+    total_iters_learning_rate: int = 1_250_000 * 40 # 40 the number of sgd steps
     gamma: float = 0.99
 
     # Target network updates hyperparameters
@@ -735,6 +738,11 @@ class MSFA_SF_NStep:
             self.target_network.load_state_dict(self.policy_network.state_dict())
 
         self.optimizer = torch.optim.Adam(self.policy_network.parameters(), lr=config.learning_rate)
+        self.optimizer_scheduler = lr_scheduler.LinearLR(self.optimizer,
+                                                         start_factor=1.0,
+                                                         end_factor=config.min_learning_rate_factor,
+                                                         total_iters=config.total_iters_learning_rate)
+
         self.gamma = config.gamma
 
         self.use_target_soft_update = config.use_target_soft_update
@@ -1033,9 +1041,8 @@ class MSFA_SF_NStep:
                         accum_loss.backward()
 
                         torch.nn.utils.clip_grad_norm_(self.policy_network.parameters(), self.config.max_gradient_norm)
-
                         for _  in range(number_of_sgd_steps):
-                            self.optimizer.step()
+                            self.optimizer_scheduler.step() # Using Learning Rate Scheduler
 
                         # Add episode loss when update statistics
                         self.episode_loss += accum_loss.item()
