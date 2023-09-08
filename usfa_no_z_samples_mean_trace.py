@@ -438,7 +438,7 @@ class DQNAgentConfig:
     target_update_tau: float = 1e-3
 
     use_full_loss: bool = False
-    use_psi_loss: bool = True
+    use_psi_loss: bool = False
 
 
 @dataclasses.dataclass
@@ -1024,7 +1024,8 @@ class MSFA_SF_NStep:
 
                         # First loss Q-Loss
                         # q_loss = self.loss(target_q_values, current_q_value_sf)
-                        q_loss = torch.mean(0.5 * torch.sum(torch.square(target_q_values - current_q_value_sf), dim=0))  # [B, ]
+                        q_loss_n_trace = 0.5 * torch.sum(torch.square(target_q_values.max(dim=2).values - current_q_value_sf.max(dim=2).values), dim=0) # [B, d_z_samples + 1]
+                        q_loss = torch.mean(q_loss_n_trace, dim=0)
                         psi_loss = torch.tensor(0).to(device)
 
                         if self.config.use_full_loss:
