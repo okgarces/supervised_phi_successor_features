@@ -437,8 +437,13 @@ class DQNAgentConfig:
 
     # Target network updates hyperparameters
     n_steps_update_target_model: int = 1_000
-    use_target_soft_update: bool = True
+    use_target_soft_update: bool = False
     target_update_tau: float = 1e-3
+
+    q_loss_coefficient: float = 1.0 # Carvalho2023 0.5
+    psi_loss_coefficient: float = 0.5 # Carvalho2023 1.0
+    phi_loss_coefficient: float = 0.0 # Carvalho2023 1.0
+
     use_full_loss: bool = False
 
 
@@ -831,6 +836,8 @@ class MSFA_SF_NStep:
             self.episode_loss = 0.0
             self.episode_q_loss = 0.0
             self.episode_psi_loss = 0.0
+            self.episode_phi_loss = 0.0
+
             self.n_episode = 0
             self.episode_start_index = 0  # This is fot the Replay Buffer
             # Statistics
@@ -942,6 +949,7 @@ class MSFA_SF_NStep:
                                                       self.episode_q_loss,
                                                       self.episode_psi_loss,
                                                       self.number_greedy_actions,
+                                                      self.episode_phi_loss,
                                                       )
 
                     # current_obs, _ = env.reset()
@@ -1011,10 +1019,10 @@ class MSFA_SF_NStep:
                             max_target_q_value_sf = max_target_q_value_sf.gather(3, next_actions)
                             target_q_values = batch_rewards + (gammas * (1 - batch_terminated_masks)) * max_target_q_value_sf.view(self.config.trace_length, self.n_batch, -1)  # Remove last dimension no needed
 
-                            if self.config.use_full_loss: # Use full loss psi + phi + q_losses (Auxiliary tasks)
-                                next_actions_sf = next_actions.unsqueeze(-1).repeat(1,1,1,1,self.sf_config.features_dim)
-                                max_target_sf_value = target_sf.gather(3, next_actions_sf)
-                                target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1))) * max_target_sf_value
+                            next_actions_sf = next_actions.unsqueeze(-1).repeat(1,1,1,1,self.sf_config.features_dim)
+                            max_target_sf_value = target_sf.gather(3, next_actions_sf)
+                            target_sf_values = batch_phis.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1) + (gammas * (1 - batch_terminated_masks.unsqueeze(-2).unsqueeze(-2).repeat(1,1,self.sf_config.d_z_samples + 1,1,1))) * max_target_sf_value
+                            target_sf_values = torch.mean(target_sf_values, dim=2) # TODO Testing with the mean value over the z_samples
 
                         # next actions? For the Q value network we should have the next action
                         current_sf, current_q_value_sf, *_ = self.policy_network(batch_states,
@@ -1026,28 +1034,34 @@ class MSFA_SF_NStep:
                         current_q_value_sf = current_q_value_sf.gather(3, batch_actions).view(self.config.trace_length, self.n_batch, -1)
 
                         # First loss Q-Loss
-                        q_loss = self.loss(target_q_values, current_q_value_sf)
+                        q_loss_n_trace = 0.5 * torch.sum(torch.square(target_q_values.max(dim=2).values - current_q_value_sf.max(dim=2).values), dim=0)  # [B, ]
+                        q_loss = torch.mean(q_loss_n_trace, dim=0)  # mean over traces
 
-                        if self.config.use_full_loss:
-                            current_actions_sf = batch_actions.unsqueeze(-1).repeat(1, 1, 1, 1, self.sf_config.features_dim)  # Add features dimension in actions.
-                            current_sf = current_sf.gather(3, current_actions_sf)
-                            psi_loss = self.loss(target_sf_values, current_sf)
-                            phi_loss = self.loss(to_tensor(torch.tensor(0, dtype=torch.float64)), to_tensor(torch.tensor(0, dtype=torch.float64)))
-                            accum_loss = 0.5 * q_loss + 1.0 * psi_loss + 1.0 * phi_loss
-                        else:
-                            accum_loss = q_loss
+                        # Second Loss psi-loss
+                        current_actions_sf = batch_actions.unsqueeze(-1).repeat(1, 1, 1, 1, self.sf_config.features_dim)  # Add features dimension in actions.
+                        current_sf = torch.mean(current_sf.gather(3, current_actions_sf), dim=2)
+                        psi_loss = torch.mean(0.5 * torch.sum(torch.square(target_sf_values - current_sf), dim=0)) # TODO Testing with the mean value over the z_samples
+
+                        # TODO Third loss phi-loss
+                        phi_loss = self.loss(to_tensor(torch.tensor(0, dtype=torch.float64)), to_tensor(torch.tensor(0, dtype=torch.float64)))
+
+                        accum_loss = self.config.q_loss_coefficient * q_loss + \
+                                     self.config.psi_loss_coefficient * psi_loss + \
+                                     self.config.phi_loss_coefficient * phi_loss
 
                         self.optimizer.zero_grad()
                         accum_loss.backward()
 
                         torch.nn.utils.clip_grad_norm_(self.policy_network.parameters(), self.config.max_gradient_norm)
+
                         for _  in range(number_of_sgd_steps):
                             self.optimizer_scheduler.step() # Using Learning Rate Scheduler
 
                         # Add episode loss when update statistics
                         self.episode_loss += accum_loss.item()
                         self.episode_q_loss += q_loss.item()
-                        self.episode_psi_loss += 0.0 # psi_loss.item()
+                        self.episode_psi_loss += psi_loss.item()
+                        self.episode_phi_loss += phi_loss.item()
 
                         # Kiyo initiative: Update priority with mean in the last dimension
                         priority = (np.abs((current_q_value_sf - target_q_values).detach().cpu().numpy().mean(axis=-1)).reshape(
