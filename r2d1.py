@@ -396,7 +396,7 @@ class CommonConfig:
 
 @dataclasses.dataclass
 class DQNAgentConfig:
-    epsilon: int = 0.1 # 0.99 # Borsa2020 keeps 0.1 fixed
+    epsilon: int = 0.99 # 0.99 # Borsa2020 keeps 0.1 fixed
     gym_legacy: bool = False
     batch_size: int = 32  # 32 # 128
     # n_training_steps: int = 50_000
@@ -631,6 +631,7 @@ class R2D1_NStep:
         self.logger = Logger('')
 
         self.config = config
+        self.dqn_config = DQNConfig()
 
         # self.n_acton
         self.epsilon = config.epsilon
@@ -689,7 +690,7 @@ class R2D1_NStep:
         self.number_of_sgd_steps = 40
 
         # Debug purposes
-        self.debug_gradients = True
+        self.debug_gradients = False
         self.current_state_from_render = False
 
     def process_current_state(self, obs, env):
@@ -992,8 +993,8 @@ class R2D1_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
-                    print('Mock testing every', self.evaluation_n_training_steps)
-                    # self.evaluate_target_tasks(training_step)
+                    #print('Mock testing every', self.evaluation_n_training_steps)
+                    self.evaluate_target_tasks(training_step)
     @torch.no_grad()
     def evaluate_target_tasks(self, training_step):
         import time
@@ -1019,14 +1020,8 @@ class R2D1_NStep:
                     else:
                         # Using GPI according to Borsa2019. max z_samples and max over training tasks.
                         # [1, d_z_samples, n_actions]
-                        q_value = torch.zeros(1, 1, self.sf_config.n_actions).to(device=device)
-                        for source_task in self.source_tasks:
-                            source_sf, source_q_value, *_ = self.policy_network(current_state, source_task.vector_to_reward, action)
-                            source_q_value = source_q_value.max(axis=1, keepdim=True).values # GPI
-                            q_value = torch.cat([q_value, source_q_value], axis=1) # cat in the d_z_sample dimension. Now is the policy dimension
-
-                        max_q_value_sf = torch.max(q_value, axis=1).values  # [n_trace, n_batch, d_z_samples/source_policies_dim, n_actions ]
-                        action = torch.argmax(max_q_value_sf, dim=1).item()  # [n_trace, n_batch, n_actions]
+                        source_q_value, *_ = self.policy_network(current_state, action)
+                        action = torch.argmax(source_q_value, dim=1).item()  # [n_trace, n_batch, n_actions]
 
                     obs, reward, *_ = target_task.step(action)
                     current_obs, current_state = self.process_current_state(obs, target_task)
