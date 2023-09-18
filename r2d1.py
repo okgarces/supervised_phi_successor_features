@@ -10,8 +10,8 @@ import random
 import torch.functional as F
 from torch.optim import lr_scheduler
 
-# device = 'cuda:0'
-device = 'cpu'
+device = 'cuda:0'
+# device = 'cpu'
 
 to_tensor = lambda x: torch.tensor(x, device=device, dtype=torch.float32) if not isinstance(x, torch.Tensor) else x.to(
     device)
@@ -410,7 +410,7 @@ class DQNAgentConfig:
     max_gradient_norm: float = 80
 
     # Replay buffer
-    n_replay_samples: int = 100_000
+    n_replay_samples: int = 1_000_000
     trace_length: int = 40
     overlap_length: int = 20  # Default according R2D2 paper
     priority_alpha: float = 0.0 # According to Carvalho2023 is 0.
@@ -420,7 +420,7 @@ class DQNAgentConfig:
     # DQN config
     learning_rate: float = 1e-2
     min_learning_rate_factor: float = 1e-4
-    total_iters_learning_rate: int = 1_250_000 # the number of sgd steps
+    total_iters_learning_rate: int = 2_500_000 # the number of sgd steps
     gamma: float = 0.99
 
     # Target network updates hyperparameters
@@ -429,7 +429,7 @@ class DQNAgentConfig:
     target_update_tau: float = 1e-3
 
     q_loss_coefficient: float = 1.0 # Carvalho2023 0.5
-    psi_loss_coefficient: float = 0.5 # Carvalho2023 1.0
+    psi_loss_coefficient: float = 0.0 # Carvalho2023 1.0
     phi_loss_coefficient: float = 0.0 # Carvalho2023 1.0
 
     use_full_loss: bool = False
@@ -1001,8 +1001,8 @@ class R2D1_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
-                    print('Mock testing every', self.evaluation_n_training_steps)
-                    # self.evaluate_target_tasks(training_step)
+                    # print('Mock testing every', self.evaluation_n_training_steps)
+                    self.evaluate_target_tasks(training_step)
     @torch.no_grad()
     def evaluate_target_tasks(self, training_step):
         import time
