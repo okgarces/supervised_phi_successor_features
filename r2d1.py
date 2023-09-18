@@ -317,9 +317,11 @@ class ReplayMemory:
         batch['target_hs'] = self.memory['target_hs_cs'][next_seq_index, :self.cell_size]
         batch['target_cs'] = self.memory['target_hs_cs'][next_seq_index, self.cell_size:]
         # This replay buffer only works for this Environment. 100 is the no op action.
-        batch['prev_action'] = [[[100]] * len(seq_index)] + [
-            self.memory['action'][(seq_index - 1 + self.burn_in_length + s) % self.memory_size] for s in
-            range(1, self.learning_length)]
+        # batch['prev_action'] = [[[100]] * len(seq_index)] + [
+        #     self.memory['action'][(seq_index - 1 + self.burn_in_length + s) % self.memory_size] for s in
+        #     range(1, self.learning_length)]
+        batch['prev_action'] = [self.memory['action'][(seq_index - 1 + self.burn_in_length + s) % self.memory_size] for s in
+            range(self.learning_length)]
         batch['action'] = [self.memory['action'][(seq_index + self.burn_in_length + s) % self.memory_size] for s in
                            range(self.learning_length)]
         batch['reward'] = [self.memory['reward'][(seq_index + self.burn_in_length + s) % self.memory_size] for s in
@@ -332,10 +334,10 @@ class ReplayMemory:
         for key in batch.keys():
             if key not in ['hs', 'cs', 'target_hs', 'target_cs']:
                 batch[key] = np.stack(batch[key])
-        index = np.stack([(seq_index + s) % self.memory_size for s in range(self.sequence_length)])
 
         for key in batch.keys():
             batch[key] = np.stack(batch[key])
+
         index = np.stack([(seq_index + s) % self.memory_size for s in range(self.sequence_length)])
 
         for key in ['state', 'next_state']:
@@ -418,7 +420,7 @@ class DQNAgentConfig:
     # DQN config
     learning_rate: float = 1e-2
     min_learning_rate_factor: float = 1e-4
-    total_iters_learning_rate: int = 1_250_000 * 40 # 40 the number of sgd steps
+    total_iters_learning_rate: int = 1_250_000 # the number of sgd steps
     gamma: float = 0.99
 
     # Target network updates hyperparameters
@@ -438,7 +440,7 @@ class DQNConfig:
     states_dim: int = 128  # This is the same as the VisionConfig output_layers_dim
 
     # n_actions: int = 2 # Cartpole
-    n_actions: int = 4  # Gridworld is 7. For GoToAndAvoid is 4
+    n_actions: int = 5  # Gridworld is 7. For GoToAndAvoid is 4, and 5 with the no-op
 
 @dataclasses.dataclass
 class VisionConfig(CommonConfig):
@@ -690,7 +692,7 @@ class R2D1_NStep:
         self.number_of_sgd_steps = 40
 
         # Debug purposes
-        self.debug_gradients = False
+        self.debug_gradients = True
         self.current_state_from_render = False
 
     def process_current_state(self, obs, env):
@@ -767,6 +769,7 @@ class R2D1_NStep:
             self.episode_q_loss = 0.0
             self.episode_psi_loss = 0.0
             self.episode_phi_loss = 0.0
+            self.episode_greedy_action_selection = {k: 0 for k in range(env.action_space.n)} # This is for logging purposes
 
             self.n_episode = 0
             self.episode_start_index = 0  # This is fot the Replay Buffer
@@ -796,6 +799,7 @@ class R2D1_NStep:
                         next_action = torch.argmax(current_q_value, dim=1).item()  # [n_batch, n_actions ]
 
                         self.number_greedy_actions += 1
+                        self.episode_greedy_action_selection[next_action] += 1
 
                     if self.gym_legacy:  # Step the environoment with the sampled random action
                         next_obs, reward, terminated, info = env.step(next_action)
@@ -867,7 +871,9 @@ class R2D1_NStep:
                                                       self.episode_q_loss,
                                                       self.episode_psi_loss,
                                                       self.number_greedy_actions,
-                                                      self.episode_phi_loss)
+                                                      self.episode_phi_loss,
+                                                      *dict(sorted(self.episode_greedy_action_selection.items())).values()
+                                                      )
 
                     # current_obs, _ = env.reset()
                     # current_obs, current_state = self.process_current_state(current_obs, env)
@@ -947,7 +953,9 @@ class R2D1_NStep:
                         torch.nn.utils.clip_grad_norm_(self.policy_network.parameters(), self.config.max_gradient_norm)
 
                         for _  in range(self.number_of_sgd_steps):
-                            self.optimizer_scheduler.step() # Using Learning Rate Scheduler
+                            self.optimizer.step()
+
+                        self.optimizer_scheduler.step() # Using Learning Rate Scheduler
 
                         # Add episode loss when update statistics
                         self.episode_loss += accum_loss.item()
@@ -966,7 +974,7 @@ class R2D1_NStep:
                             accum_norm = 0
                             accum_norm_params = 0
                             for param in self.policy_network.parameters():
-                                accum_norm += torch.linalg.norm(param.grad)
+                                accum_norm += torch.linalg.norm(param.data)
                                 accum_norm_params += torch.mean(param.grad)
 
                             print('after', training_step, accum_norm, accum_norm_params, accum_loss)
@@ -993,8 +1001,8 @@ class R2D1_NStep:
                 #########################################################
                 ### Evaluation in target tasks
                 if (training_step % self.evaluation_n_training_steps == 0):
-                    #print('Mock testing every', self.evaluation_n_training_steps)
-                    self.evaluate_target_tasks(training_step)
+                    print('Mock testing every', self.evaluation_n_training_steps)
+                    # self.evaluate_target_tasks(training_step)
     @torch.no_grad()
     def evaluate_target_tasks(self, training_step):
         import time

@@ -35,10 +35,7 @@ class PickupAndAvoid(RoomGridLevel):
     | 1   | right        | Turn right        |
     | 2   | forward      | Move forward      |
     | 3   | pickup       | Pick up an object |
-    | 4   | drop         | Unused            |
-    | 5   | toggle       | Unused            |
-    | 6   | done         | Unused            |
-    | 100 | No-Op Action | No-Op action      |
+    | 4   | No-Op Action | No-Op Action      |
     ## Observation Encoding
     - Each tile is encoded as a 3 dimensional tuple:
         `(OBJECT_IDX, COLOR_IDX, STATE)`
@@ -64,7 +61,7 @@ class PickupAndAvoid(RoomGridLevel):
         
         self.number_of_elements = number_of_elements
         self.vector_to_reward = vector_to_reward # [1,0,0,0] means pickup red key. [0,1,0,0] means pickup blue key.
-        self.action_space.n = 4 # Only actions 0 to 3
+        self.action_space.n = 5 # Only actions 0 to 4
         
     def place_in_room(self, i: int, j: int, obj: WorldObj) -> tuple[WorldObj, tuple[int, int]]:
         """
@@ -122,6 +119,7 @@ class PickupAndAvoid(RoomGridLevel):
         self.instrs = PickupInstr(ObjDesc(self.object_kind))
         
     def step(self, action):
+        # If action == 4. It's a not action
         obs, env_reward, terminated, truncated, info = super().step(action)
         
         # total reward
@@ -155,4 +153,4 @@ class PickupAndAvoid(RoomGridLevel):
         return obs, reward, terminated, truncated, info
 
     def get_no_op_action(self):
-        return 100
+        return 4
