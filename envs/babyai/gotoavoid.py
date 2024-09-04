@@ -7,6 +7,23 @@ import numpy as np
 from minigrid.manual_control import ManualControl
 from minigrid.minigrid_env import MiniGridEnv
 
+
+class OverlapableObject(WorldObj):
+
+    def __init__(self, object: WorldObj):
+        super().__init__(object.type, object.color)
+        self.object = object
+
+    def can_overlap(self) -> bool:
+        return True
+
+    def can_pickup(self) -> bool:
+        return self.object.can_pickup()
+
+    def render(self, r: np.ndarray) -> np.ndarray:
+        return self.object.render(r)
+
+
 def reject_next_to(env: MiniGridEnv, pos: tuple[int, int]):
     """
     Function to filter out object positions that are right next to
@@ -34,7 +51,6 @@ class PickupAndAvoid(RoomGridLevel):
     | 1   | right        | Turn right        |
     | 2   | forward      | Move forward      |
     | 3   | pickup       | Pick up an object |
-    | 4   | No-Op Action | No-Op Action      |
     ## Observation Encoding
     - Each tile is encoded as a 3 dimensional tuple:
         `(OBJECT_IDX, COLOR_IDX, STATE)`
@@ -44,23 +60,24 @@ class PickupAndAvoid(RoomGridLevel):
     ## Rewards
     A reward of '1 - 0.9 * (step_count / max_steps)' is given for success, and '0' for failure.
     ## Termination
-    The episode ends if any one of the following conditions is met:
-    1. The agent picks up the object.
-    2. Timeout (see `max_steps`).
+    1. This env does not terminate only truncated due to timeout.
+    ## Truncation
+    1. Timeout (see `max_steps`).
     """
 
-    def __init__(self, number_of_elements, vector_to_reward, **kwargs):
+    def __init__(self, number_of_elements, vector_to_reward, use_pick_action = True, **kwargs):
         # We add many distractors to increase the probability
         # of ambiguous locations within the same room
         super().__init__(num_rows=1, num_cols=1, room_size=10, **kwargs)
         # Set valid objects as: (key, red), (key, blue), (key, green), (key, yellow)
-        self.object_kind = 'key'
+        self.object_kind = 'ball'
         self.object_colors_vector = ['red', 'blue', 'green', 'yellow']
         self.valid_elements = [(self.object_kind, color) for color in self.object_colors_vector]
         
         self.number_of_elements = number_of_elements
         self.vector_to_reward = vector_to_reward # [1,0,0,0] means pickup red key. [0,1,0,0] means pickup blue key.
-        self.action_space.n = 5 # Only actions 0 to 4
+        self.action_space.n = 4 if use_pick_action else 3 # Only actions 0 to 3
+        self.use_pick_action = use_pick_action
         
     def place_in_room(self, i: int, j: int, obj: WorldObj, append=True) -> tuple[WorldObj, tuple[int, int]]:
         """
@@ -89,6 +106,10 @@ class PickupAndAvoid(RoomGridLevel):
             raise ValueError(
                 f"{obj_type} object kind is not available in this environment."
             )
+
+        if not self.use_pick_action:
+            obj = OverlapableObject(obj)
+
         return obj
     
     def _add_valid_objects(self):     
@@ -100,8 +121,7 @@ class PickupAndAvoid(RoomGridLevel):
             
             obj = self.valid_elements[n % len(self.valid_elements)]
             obj = self._make_valid_object(obj)
-            self.place_in_room(room_i, room_j, obj)
-            objs.append(obj)
+            objs.append(self.place_in_room(room_i, room_j, obj))
             
         return objs
 
@@ -117,8 +137,27 @@ class PickupAndAvoid(RoomGridLevel):
         
         # Generate mission instruction from vector to reward
         self.instrs = PickupInstr(ObjDesc(self.object_kind))
-        
+
+    def is_object_reached(self):
+        if self.use_pick_action:
+            return self.carrying is not None
+        else:
+            is_reached = False
+            fwd_cell = self.grid.get(*self.agent_pos)
+
+            if fwd_cell is not None and fwd_cell.can_pickup():
+                is_reached = True
+                self.carrying = fwd_cell
+                self.carrying.cur_pos = np.array([-1, -1])
+                self.grid.set(self.agent_pos[0], self.agent_pos[1], None)
+            return is_reached
+
     def step(self, action):
+
+        if not self.use_pick_action:
+            if action == 3:
+                action = 5
+
         # If action == 4. It's a not action
         obs, env_reward, terminated, truncated, info = super().step(action)
         
@@ -128,7 +167,7 @@ class PickupAndAvoid(RoomGridLevel):
         # Only for fixed feature
         feature = np.zeros(len(self.object_colors_vector))
         
-        if (self.carrying is not None) or terminated:
+        if (self.is_object_reached()) or terminated:
             # calculate the reward
             idx_object_in_valid_obj = self.object_colors_vector.index(self.carrying.color)
             
