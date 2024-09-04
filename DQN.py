@@ -3,7 +3,7 @@ import torch
 from minigrid.wrappers import RGBImgObsWrapper
 from torch import optim
 
-from configs.configs import VisionConfig
+# from configs.configs import VisionConfig
 from envs.babyai.gotoavoid import PickupAndAvoid
 from nets.CNN import DQNConvolutionalNetwork
 from utils.buffer import ReplayBuffer
@@ -35,7 +35,7 @@ class DQNAgent:
 
         self.logger = Logger('./')
 
-        vc = VisionConfig()
+        # vc = VisionConfig()
 
         self.q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
         self.target_q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
@@ -116,7 +116,7 @@ class DQNAgent:
             # only works for the discrete actions.
             return np.random.randint(self.n_actions)
         else:
-            return torch.argmax(self.q_net(tensor_obs))
+            return torch.argmax(self.q_net(tensor_obs)).item()
 
     def learn(self, total_timesteps, total_episodes=None, reset_num_timesteps=True):
         episode_reward = 0.0
