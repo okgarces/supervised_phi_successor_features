@@ -32,7 +32,7 @@ class DQNAgent:
         self.env = env
         self.n_actions = env.action_space.n
 
-
+        self.num_timesteps = 0
         self.logger = Logger('./')
 
         # vc = VisionConfig()
@@ -45,7 +45,7 @@ class DQNAgent:
             param.requires_grad = False
         self.q_optim = optim.Adam(self.q_net.parameters(), lr=self.learning_rate)
 
-        self.replay_buffer = ReplayBuffer(self.obs_dim, self.action_dim, rew_dim=1, max_size=100000, device=self.device)
+        self.replay_buffer = ReplayBuffer(self.obs_dim, self.action_dim, rew_dim=1, max_size=2e6, device=self.device)
 
     def process_obs(self, obs):
         if 'image' in obs.keys():
@@ -123,7 +123,7 @@ class DQNAgent:
 
         num_episodes = 1
 
-        self.num_timesteps = 1
+        self.num_timesteps += 1
 
         obs, _ = self.env.reset()
         obs = self.process_obs(obs)
@@ -162,13 +162,14 @@ class DQNAgent:
                 obs = next_obs
 
 if __name__ == '__main__':
-    env = RGBImgObsWrapper(PickupAndAvoid(12,[1,1,1,1], render_mode="rgb_array", max_steps=200))
+    env = RGBImgObsWrapper(PickupAndAvoid(12,[1,1,1,1],
+                                          render_mode="rgb_array", max_steps=200, use_pick_action=False))
     input_shape = (3, 80, 80)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dqn = DQNAgent(input_shape, env, device=device)
 
-    dqn.learn(1e6, total_episodes=1_000_000)
+    dqn.learn(2e6, total_episodes=1_000_000)
     # enable manual control for testing
     # manual_control = ManualControl(env, seed=42)
     # manual_control.start()
