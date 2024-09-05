@@ -26,7 +26,7 @@ class DQNAgent:
 
         self.epsilon = 1
         self.initial_epsilon = 1
-        self.epsilon_decay_steps = 1e6
+        self.epsilon_decay_steps = 1.6e6
         self.final_epsilon = 0.1
 
         self.env = env
