@@ -45,7 +45,7 @@ class DQNAgent:
             param.requires_grad = False
         self.q_optim = optim.Adam(self.q_net.parameters(), lr=self.learning_rate)
 
-        self.replay_buffer = ReplayBuffer(self.obs_dim, self.action_dim, rew_dim=1, max_size=2e6, device=self.device)
+        self.replay_buffer = ReplayBuffer(self.obs_dim, self.action_dim, rew_dim=1, max_size=int(2e6), device=self.device)
 
     def process_obs(self, obs):
         if 'image' in obs.keys():
