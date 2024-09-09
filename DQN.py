@@ -205,12 +205,13 @@ class DQNAgent:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='DQN agent experiment.')
     parser.add_argument('-env', type=str, choices=['gotoavoid', 'cartpole'], default='gotoavoid', help='Environment.')
+    parser.add_argument('-device', type=str, default='cuda:0', help='Environment.')
     args = parser.parse_args()
     environment = args.env
 
     env = None
     input_shape = (3, 80, 80)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     max_total_timestps = 2e6
     max_episodes = 1e6
     config = None
