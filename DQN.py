@@ -10,6 +10,8 @@ from utils.buffer import ReplayBuffer
 from utils.logger import Logger
 from utils.torch import polyak_update, linearly_decaying_epsilon
 
+import argparse
+
 
 class DQNAgent:
     def __init__(self, input_shape, env=None, device=None):
@@ -18,24 +20,22 @@ class DQNAgent:
         self.obs_dim = input_shape
         self.action_dim = 1
         self.gradient_updates = 1
-        self.batch_size = 32
+        self.batch_size = 256
 
         self.gamma = 0.95
         self.tau = 1
-        self.target_net_update_freq = 1000
+        self.target_net_update_freq = 1_000
 
         self.epsilon = 1
         self.initial_epsilon = 1
         self.epsilon_decay_steps = 1.6e6
-        self.final_epsilon = 0.1
+        self.final_epsilon = 0.03
 
         self.env = env
         self.n_actions = env.action_space.n
 
         self.num_timesteps = 0
         self.logger = Logger('./')
-
-        # vc = VisionConfig()
 
         self.q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
         self.target_q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
@@ -45,7 +45,7 @@ class DQNAgent:
             param.requires_grad = False
         self.q_optim = optim.Adam(self.q_net.parameters(), lr=self.learning_rate)
 
-        self.replay_buffer = ReplayBuffer(self.obs_dim, self.action_dim, rew_dim=1, max_size=int(2e6), device=self.device)
+        self.replay_buffer = ReplayBuffer(self.obs_dim, self.action_dim, rew_dim=1, max_size=int(100_000), device=self.device)
 
     def process_obs(self, obs):
         if 'image' in obs.keys():
@@ -64,7 +64,7 @@ class DQNAgent:
 
         for _ in range(self.gradient_updates):
 
-            s_obs, s_options, s_rewards, s_next_obs, s_dones, gammas = self.replay_buffer.sample(self.batch_size, to_tensor=True)
+            s_obs, s_actions, s_rewards, s_next_obs, s_dones, gammas = self.replay_buffer.sample(self.batch_size, to_tensor=True)
 
             with torch.no_grad():
 
@@ -80,7 +80,7 @@ class DQNAgent:
                 q_targets = q_targets.reshape(-1)
 
             q_value = self.q_net(s_obs)
-            q_value = q_value.gather(1, s_options.long().reshape(-1,1).expand(q_value.size(0), 1))
+            q_value = q_value.gather(1, s_actions.long().reshape(-1,1).expand(q_value.size(0), 1))
             q_value = q_value.reshape(-1)
 
             critic_loss = torch.nn.functional.mse_loss(q_value, q_targets)
