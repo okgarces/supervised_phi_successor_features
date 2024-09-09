@@ -24,7 +24,7 @@ class DQNAgent:
 
         self.gamma = 0.95
         self.tau = 1
-        self.target_net_update_freq = 1_000
+        self.target_net_update_freq = 10_000
 
         self.epsilon = 1
         self.initial_epsilon = 1
