@@ -89,8 +89,8 @@ class DQNAgent:
             self.target_q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
         else:
             self.obs_dim = self.env.observation_space.shape[0]
-            self.q_net = QNetwork(self.obs_dim, self.n_actions)
-            self.target_q_net = QNetwork(self.obs_dim, self.n_actions)
+            self.q_net = QNetwork(self.obs_dim, self.n_actions).to(self.device)
+            self.target_q_net = QNetwork(self.obs_dim, self.n_actions).to(self.device)
 
         self.target_q_net.load_state_dict(self.q_net.state_dict())
         for param in self.target_q_net.parameters():
