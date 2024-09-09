@@ -98,7 +98,7 @@ class DQNAgent:
 
         if self.num_timesteps % 100 == 0:
             self.logger.log({"losses/critic_loss": critic_loss.item(), 'timesteps': self.num_timesteps})
-            self.logger.log({"metrics/epsilon": self.epsilon, 'timesteps': self.num_timesteps})
+            self.logger.log({"metrics/epsilon": self.epsilon.item(), 'timesteps': self.num_timesteps})
 
             # accum_grads = 0
             # accum_weights = 0
@@ -112,11 +112,12 @@ class DQNAgent:
             # self.logger.log({"metrics/hl_weights_mean": data, 'timesteps': self.num_timesteps})
 
     def act(self, tensor_obs):
-        if np.random.random() < self.epsilon:
-            # only works for the discrete actions.
-            return np.random.randint(self.n_actions)
-        else:
-            return torch.argmax(self.q_net(tensor_obs)).item()
+        with torch.no_grad():
+            if np.random.random() < self.epsilon:
+                # only works for the discrete actions.
+                return np.random.randint(self.n_actions)
+            else:
+                return torch.argmax(self.q_net(tensor_obs)).item()
 
     def learn(self, total_timesteps, total_episodes=None, reset_num_timesteps=True):
         episode_reward = 0.0
