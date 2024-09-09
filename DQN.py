@@ -1,10 +1,14 @@
+import dataclasses
+
 import numpy as np
 import torch
+from gymnasium.wrappers import PixelObservationWrapper
 from minigrid.wrappers import RGBImgObsWrapper
 from torch import optim
 
-# from configs.configs import VisionConfig
 from envs.babyai.gotoavoid import PickupAndAvoid
+from envs.cartpole.cartpole import CartpoleDissimilar
+
 from nets.CNN import DQNConvolutionalNetwork
 from utils.buffer import ReplayBuffer
 from utils.logger import Logger
@@ -13,29 +17,64 @@ from utils.torch import polyak_update, linearly_decaying_epsilon
 import argparse
 
 
+def resize_obs(observation, shape=(80,80)):
+    """Updates the observations by resizing the observation to shape given by :attr:`shape`."""
+    import cv2
+
+    observation = cv2.resize(observation, shape, interpolation=cv2.INTER_AREA)
+    return observation
+
+
+@dataclasses.dataclass
+class DQNConfig:
+    learning_rate = 1e-3
+    gradient_updates = 1
+    batch_size = 256
+    gamma = 0.95
+
+    tau = 1
+    target_net_update_freq = 10_000
+
+    initial_epsilon = 1
+    epsilon_decay_steps = 1.6e6
+    final_epsilon = 0.03
+
+
+@dataclasses.dataclass
+class GotoAvoid(DQNConfig):
+    pass
+
+
+@dataclasses.dataclass
+class CartpoleConfig(DQNConfig):
+    gamma = 0.99
+    epsilon_decay_steps = 1e6
+
 class DQNAgent:
-    def __init__(self, input_shape, env=None, device=None):
-        self.learning_rate = 1e-3
+    def __init__(self, input_shape, env=None, device=None, config: DQNConfig = None):
         self.device = device
+
+        self.learning_rate = config.learning_rate
         self.obs_dim = input_shape
         self.action_dim = 1
-        self.gradient_updates = 1
-        self.batch_size = 256
+        self.gradient_updates = config.gradient_updates
+        self.batch_size = config.batch_size
 
-        self.gamma = 0.95
-        self.tau = 1
-        self.target_net_update_freq = 10_000
+        self.gamma = config.gamma
+        self.tau = config.tau
+        self.target_net_update_freq = config.target_net_update_freq
 
-        self.epsilon = 1
-        self.initial_epsilon = 1
-        self.epsilon_decay_steps = 1.6e6
-        self.final_epsilon = 0.03
+        self.initial_epsilon = config.initial_epsilon
+        self.epsilon_decay_steps = config.epsilon_decay_steps
+        self.final_epsilon = config.final_epsilon
+
+        self.epsilon = self.initial_epsilon
 
         self.env = env
         self.n_actions = env.action_space.n
 
         self.num_timesteps = 0
-        self.logger = Logger('./')
+        self.logger = Logger('./', prefix=config.__class__.__name__.lower())
 
         self.q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
         self.target_q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
@@ -49,7 +88,8 @@ class DQNAgent:
 
     def process_obs(self, obs):
         if 'image' in obs.keys():
-            x = np.expand_dims(obs['image'], axis=0)
+            x = resize_obs(obs['image'])
+            x = np.expand_dims(x, axis=0)
             x = np.transpose(x, (0,3,1,2))
             return x
         else:
@@ -163,14 +203,40 @@ class DQNAgent:
                 obs = next_obs
 
 if __name__ == '__main__':
-    env = RGBImgObsWrapper(PickupAndAvoid(12,[1,1,1,1],
-                                          render_mode="rgb_array", max_steps=200, use_pick_action=False))
+    parser = argparse.ArgumentParser(description='DQN agent experiment.')
+    parser.add_argument('-env', type=str, choices=['gotoavoid', 'cartpole'], default='gotoavoid', help='Environment.')
+    args = parser.parse_args()
+    environment = args.env
+
+    env = None
     input_shape = (3, 80, 80)
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dqn = DQNAgent(input_shape, env, device=device)
+    max_total_timestps = 2e6
+    max_episodes = 1e6
+    config = None
 
-    dqn.learn(2e6, total_episodes=1_000_000)
+    if environment == 'gotoavoid':
+        env = RGBImgObsWrapper(PickupAndAvoid(12,[1,1,1,1],
+                                              render_mode="rgb_array", max_steps=200, use_pick_action=False))
+
+        config = GotoAvoid()
+    elif environment == 'cartpole':
+        env = PixelObservationWrapper(CartpoleDissimilar(0.5, render_mode="rgb_array"), pixel_keys=('image',))
+        max_total_timestps = 2e6
+        max_episodes = 2000
+        config = CartpoleConfig()
+
+    # import matplotlib
+    # matplotlib.use('Agg')
+    # import matplotlib.pyplot as plt
+    # state, _ = env.reset()
+    # plt.imsave('cartpole.png', state['image'])
+    # plt.imsave('cartpole_8080.png', resize_obs(state['image'], (80,80)))
+
+
+    dqn = DQNAgent(input_shape, env, device=device, config=config)
+    dqn.learn(max_total_timestps, total_episodes=max_episodes)
+
     # enable manual control for testing
     # manual_control = ManualControl(env, seed=42)
     # manual_control.start()
