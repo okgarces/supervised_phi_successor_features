@@ -8,8 +8,13 @@ class ReplayBuffer:
         self.max_size = max_size
         self.ptr, self.size, = 0, 0
 
-        self.obs = np.zeros((max_size, obs_dim[0], obs_dim[1], obs_dim[2]), dtype=obs_dtype)
-        self.next_obs = np.zeros((max_size, obs_dim[0], obs_dim[1], obs_dim[2]), dtype=obs_dtype)
+        if isinstance(obs_dim, tuple):
+            self.obs = np.zeros((max_size, obs_dim[0], obs_dim[1], obs_dim[2]), dtype=obs_dtype)
+            self.next_obs = np.zeros((max_size, obs_dim[0], obs_dim[1], obs_dim[2]), dtype=obs_dtype)
+        else:
+            self.obs = np.zeros((max_size, obs_dim), dtype=obs_dtype)
+            self.next_obs = np.zeros((max_size, obs_dim), dtype=obs_dtype)
+
         self.actions = np.zeros((max_size, action_dim), dtype=action_dtype)
         self.rewards = np.zeros((max_size, rew_dim), dtype=np.float32)
         self.dones = np.zeros((max_size, 1), dtype=np.float32)

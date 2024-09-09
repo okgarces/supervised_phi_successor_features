@@ -10,6 +10,8 @@ from envs.babyai.gotoavoid import PickupAndAvoid
 from envs.cartpole.cartpole import CartpoleDissimilar
 
 from nets.CNN import DQNConvolutionalNetwork
+from nets.QNetwork import QNetwork
+
 from utils.buffer import ReplayBuffer
 from utils.logger import Logger
 from utils.torch import polyak_update, linearly_decaying_epsilon
@@ -39,6 +41,8 @@ class DQNConfig:
     epsilon_decay_steps = 1.6e6
     final_epsilon = 0.03
 
+    use_image_obs = True
+
 
 @dataclasses.dataclass
 class GotoAvoid(DQNConfig):
@@ -50,12 +54,13 @@ class CartpoleConfig(DQNConfig):
     gamma = 0.99
     epsilon_decay_steps = 1e6
 
+    use_image_obs = False
+
 class DQNAgent:
     def __init__(self, input_shape, env=None, device=None, config: DQNConfig = None):
         self.device = device
 
         self.learning_rate = config.learning_rate
-        self.obs_dim = input_shape
         self.action_dim = 1
         self.gradient_updates = config.gradient_updates
         self.batch_size = config.batch_size
@@ -76,8 +81,16 @@ class DQNAgent:
         self.num_timesteps = 0
         self.logger = Logger('./', prefix=config.__class__.__name__.lower())
 
-        self.q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
-        self.target_q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
+        self.use_image_obs = config.use_image_obs
+
+        if self.use_image_obs:
+            self.obs_dim = input_shape
+            self.q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
+            self.target_q_net = DQNConvolutionalNetwork(input_shape, self.n_actions).to(self.device)
+        else:
+            self.obs_dim = self.env.observation_space.shape[0]
+            self.q_net = QNetwork(self.obs_dim, self.n_actions)
+            self.target_q_net = QNetwork(self.obs_dim, self.n_actions)
 
         self.target_q_net.load_state_dict(self.q_net.state_dict())
         for param in self.target_q_net.parameters():
@@ -87,7 +100,7 @@ class DQNAgent:
         self.replay_buffer = ReplayBuffer(self.obs_dim, self.action_dim, rew_dim=1, max_size=int(100_000), device=self.device)
 
     def process_obs(self, obs):
-        if 'image' in obs.keys():
+        if self.use_image_obs and 'image' in obs.keys():
             x = resize_obs(obs['image'])
             x = np.expand_dims(x, axis=0)
             x = np.transpose(x, (0,3,1,2))
@@ -222,7 +235,8 @@ if __name__ == '__main__':
 
         config = GotoAvoid()
     elif environment == 'cartpole':
-        env = PixelObservationWrapper(CartpoleDissimilar(0.5, render_mode="rgb_array"), pixel_keys=('image',))
+        # env = PixelObservationWrapper(CartpoleDissimilar(0.5, render_mode="rgb_array"), pixel_keys=('image',))
+        env = CartpoleDissimilar(0.5, render_mode="rgb_array")
         max_total_timestps = 2e6
         max_episodes = 2000
         config = CartpoleConfig()
